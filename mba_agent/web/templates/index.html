@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MBA Paper Agent</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f4f1ec;--bg2:#eae5dd;--bg2h:#e0dbd2;--bg2a:#d9d3c9;--bgW:#fff;--bgU:#e8e3da;--bgD:#2d2b28;--bgP:#faf8f5;--bgC:#f0ede7;--bd:#d5d0c7;--bdL:#e5e1d9;--bdF:#b09e84;--tx:#2d2b28;--tx2:#6b6560;--tx3:#9a948c;--txI:#faf8f5;--ac:#b5845a;--acH:#a07545;--acS:#d4b896;--gn:#5a8c6f;--rd:#b85c5c;--bl:#5a7eb8;--fb:'Inter',-apple-system,sans-serif;--fs:'Lora',Georgia,serif;--fm:'IBM Plex Mono',monospace;--sw:260px;--dw:380px;--cw:720px;--r:8px;--rl:12px;--rp:20px;--t:150ms ease}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--fb);background:var(--bg);color:var(--tx);height:100vh;overflow:hidden;display:flex;font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
+::selection{background:var(--acS)}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+
+.sb{width:var(--sw);min-width:var(--sw);background:var(--bg2);display:flex;flex-direction:column;height:100vh;border-right:1px solid var(--bdL)}
+.sb-top{padding:14px 14px 10px}
+.nb{width:100%;padding:9px 14px;background:var(--bgW);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:13px;font-weight:500;cursor:pointer;transition:var(--t);text-align:left;display:flex;align-items:center;gap:8px}
+.nb:hover{border-color:var(--bdF);box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.prog{margin:10px 14px 4px;padding:10px;background:var(--bgW);border-radius:var(--r);border:1px solid var(--bdL)}
+.prog-label{font-size:11px;font-weight:600;color:var(--tx2);margin-bottom:6px;display:flex;justify-content:space-between}
+.prog-bar{height:6px;background:var(--bdL);border-radius:3px;overflow:hidden}
+.prog-fill{height:100%;background:var(--gn);border-radius:3px;transition:width .3s}
+.prog-stats{display:flex;justify-content:space-between;margin-top:5px;font-size:10px;font-family:var(--fm);color:var(--tx3)}
+.bib-btn{width:100%;margin:6px 14px 0;width:calc(100% - 28px);padding:6px 10px;background:transparent;border:1px dashed var(--bd);border-radius:var(--r);color:var(--tx3);font-size:11px;cursor:pointer;transition:var(--t)}
+.bib-btn:hover{border-color:var(--bdF);color:var(--tx2)}
+.sl{flex:1;overflow-y:auto;padding:6px 8px}
+.dgl{padding:10px 10px 4px;font-size:11px;font-weight:600;color:var(--tx3);text-transform:uppercase;letter-spacing:.4px}
+.si{padding:8px 10px;border-radius:var(--r);cursor:pointer;transition:var(--t);display:flex;align-items:center;justify-content:space-between;margin-bottom:1px}
+.si:hover{background:var(--bg2h)}.si.on{background:var(--bg2a)}
+.si .t{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.si .ax{opacity:0;transition:opacity .1s}.si:hover .ax{opacity:1}
+.si .db{background:none;border:none;color:var(--tx3);cursor:pointer;padding:2px 4px;border-radius:4px;font-size:12px}.si .db:hover{color:var(--rd)}
+.sft{padding:10px 14px;border-top:1px solid var(--bdL);display:flex;flex-direction:column;gap:5px}
+.sft .ss{font-size:11px;font-family:var(--fm);color:var(--tx3);display:flex;justify-content:space-between}
+
+.mn{flex:1;display:flex;flex-direction:column;height:100vh;min-width:0}
+.tb{padding:8px 20px;display:flex;align-items:center;gap:8px;min-height:44px;border-bottom:1px solid var(--bdL);flex-wrap:wrap}
+.mp{display:flex;gap:2px;background:var(--bg2);border-radius:var(--rp);padding:3px}
+.mb{padding:4px 10px;border:none;background:transparent;color:var(--tx2);font-family:var(--fb);font-size:11px;font-weight:500;cursor:pointer;border-radius:var(--rp);transition:var(--t)}
+.mb:hover{color:var(--tx)}.mb.on{background:var(--bgW);color:var(--tx);box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.tsp{flex:1}
+.sec-sel{padding:4px 8px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);font-size:11px;font-family:var(--fm);color:var(--tx2);max-width:200px}
+.dt{padding:5px 11px;background:transparent;border:1px solid var(--bd);border-radius:var(--r);color:var(--tx2);font-size:12px;cursor:pointer;transition:var(--t)}
+.dt:hover{border-color:var(--bdF);color:var(--tx)}.dt.has{border-color:var(--acS);color:var(--ac)}
+.ml2{font-size:11px;font-family:var(--fm);color:var(--tx3)}
+
+.ca{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center}
+.cs{width:100%;max-width:var(--cw);padding:24px 20px 100px;flex:1}
+.emp{display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;text-align:center;padding:40px 20px}
+.elg{width:48px;height:48px;border-radius:50%;background:var(--acS);display:flex;align-items:center;justify-content:center;font-size:22px;margin-bottom:16px;color:var(--ac)}
+.emp h2{font-family:var(--fs);font-size:22px;font-weight:500;margin-bottom:6px}
+.emp p{color:var(--tx2);font-size:14px;max-width:440px;margin-bottom:20px}
+.qas{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;max-width:560px}
+.qa{padding:7px 14px;background:var(--bgW);border:1px solid var(--bd);border-radius:var(--rp);color:var(--tx2);font-size:12px;cursor:pointer;transition:var(--t)}
+.qa:hover{border-color:var(--acS);color:var(--tx)}
+
+.msg{margin-bottom:24px;animation:fi .2s ease}
+@keyframes fi{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.mlb{font-size:12px;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.mlb.u{color:var(--tx2)}.mlb.a{color:var(--ac)}
+.mlb .mt{font-size:10px;font-weight:500;padding:1px 6px;border-radius:4px;background:var(--bg2);color:var(--tx3);text-transform:uppercase;letter-spacing:.3px}
+.mlb .model-badge{font-size:10px;font-family:var(--fm);padding:1px 5px;border-radius:3px;background:var(--bgC);color:var(--tx3)}
+.mc{line-height:1.7}
+.mc.uc{background:var(--bgU);padding:12px 16px;border-radius:var(--rl);font-size:14px;white-space:pre-wrap}
+.mc.ac{font-family:var(--fs);font-size:15px;padding:4px 0}
+.mc.ac h1{font-family:var(--fb);font-size:20px;font-weight:600;margin:22px 0 8px}
+.mc.ac h2{font-family:var(--fb);font-size:17px;font-weight:600;margin:18px 0 6px}
+.mc.ac h3{font-family:var(--fb);font-size:15px;font-weight:600;margin:14px 0 4px}
+.mc.ac p{margin-bottom:10px}.mc.ac ul,.mc.ac ol{margin:8px 0 12px;padding-left:22px}.mc.ac li{margin-bottom:4px}
+.mc.ac strong{font-weight:600}
+.mc.ac blockquote{border-left:3px solid var(--acS);padding:6px 14px;margin:10px 0;color:var(--tx2);font-style:italic;background:rgba(0,0,0,.015);border-radius:0 var(--r) var(--r) 0}
+.mc.ac code{font-family:var(--fm);font-size:12px;background:var(--bgC);padding:2px 5px;border-radius:4px}
+.mc.ac pre{background:var(--bgC);border:1px solid var(--bdL);border-radius:var(--r);padding:14px;overflow-x:auto;margin:10px 0;font-size:12px}
+.mc.ac pre code{background:none;padding:0}
+.mc.ac table{border-collapse:collapse;width:100%;margin:12px 0;font-family:var(--fb);font-size:13px}
+.mc.ac th,.mc.ac td{padding:7px 10px;border:1px solid var(--bdL)}.mc.ac th{background:var(--bg2);font-weight:600}
+.mf{margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sc{display:inline-flex;padding:2px 8px;background:var(--bg2);border-radius:var(--rp);font-size:11px;font-family:var(--fm);color:var(--tx3)}
+.xb{padding:3px 9px;background:none;border:1px solid var(--bd);border-radius:var(--rp);font-size:11px;color:var(--tx3);cursor:pointer;transition:var(--t)}
+.xb:hover{color:var(--ac);border-color:var(--acS)}
+
+/* Thinking indicator */
+.think-box{margin:6px 0;padding:8px 12px;background:var(--bgC);border-left:3px solid var(--acS);border-radius:0 var(--r) var(--r) 0;font-size:12px;font-family:var(--fm);color:var(--tx3);max-height:120px;overflow-y:auto;display:none}
+.think-box.visible{display:block}
+.think-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--acS);margin-bottom:4px}
+
+.lbar{display:flex;align-items:center;gap:8px;padding:8px 0;color:var(--tx3);font-size:13px}
+.dots{display:flex;gap:4px}
+.dots span{width:6px;height:6px;background:var(--acS);border-radius:50%;animation:dp 1.2s infinite}
+.dots span:nth-child(2){animation-delay:.15s}.dots span:nth-child(3){animation-delay:.3s}
+@keyframes dp{0%,80%,100%{opacity:.3;transform:scale(.85)}40%{opacity:1;transform:scale(1)}}
+
+.ia{padding:0 20px 16px;display:flex;justify-content:center}
+.ic{width:100%;max-width:var(--cw)}
+.ib{display:flex;align-items:flex-end;gap:8px;background:var(--bgW);border:1px solid var(--bd);border-radius:var(--rl);padding:8px 12px 8px 16px;transition:border-color var(--t),box-shadow var(--t);box-shadow:0 1px 4px rgba(0,0,0,.04)}
+.ib:focus-within{border-color:var(--bdF);box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.ib textarea{flex:1;border:none;background:transparent;color:var(--tx);font-family:var(--fb);font-size:14px;line-height:1.5;resize:none;min-height:24px;max-height:180px;outline:none;padding:4px 0}
+.ib textarea::placeholder{color:var(--tx3)}
+.sb2{width:32px;height:32px;border-radius:50%;border:none;background:var(--tx);color:var(--txI);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:var(--t);flex-shrink:0}
+.sb2:hover{background:var(--ac)}.sb2:disabled{opacity:.3;cursor:not-allowed}
+.sb2 svg{width:16px;height:16px}
+.im{display:flex;justify-content:space-between;align-items:center;margin-top:6px;padding:0 4px}
+.ih{font-size:11px;color:var(--tx3)}
+.ov{display:flex;gap:10px;align-items:center}
+.ov-grp{display:flex;align-items:center;gap:3px}
+.ov-label{font-size:10px;font-family:var(--fm);color:var(--tx3);letter-spacing:.3px}
+.ov-pill{padding:2px 7px;border:1px solid var(--bdL);background:transparent;border-radius:var(--rp);font-size:10px;font-family:var(--fm);color:var(--tx3);cursor:pointer;transition:var(--t);line-height:1.4}
+.ov-pill:hover{border-color:var(--bd);color:var(--tx2)}
+.ov-pill.on{background:var(--bgW);border-color:var(--bdF);color:var(--tx);font-weight:500}
+.ov-pill.on-opus{border-color:var(--ac);color:var(--ac)}
+.ov-pill.on-sonnet{border-color:var(--bl);color:var(--bl)}
+
+.dp{width:0;overflow:hidden;background:var(--bgP);border-left:1px solid var(--bdL);transition:width .25s ease;display:flex;flex-direction:column}
+.dp.open{width:var(--dw);min-width:var(--dw)}
+.dph{padding:12px 16px;border-bottom:1px solid var(--bdL);display:flex;align-items:center;justify-content:space-between}
+.dph h3{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cpb{background:none;border:none;color:var(--tx3);cursor:pointer;font-size:18px;padding:0 4px;line-height:1}.cpb:hover{color:var(--tx)}
+.dfl{padding:8px 12px;border-bottom:1px solid var(--bdL);max-height:160px;overflow-y:auto}
+.dfi{padding:6px 8px;border-radius:var(--r);cursor:pointer;font-size:12px;display:flex;justify-content:space-between;transition:var(--t)}
+.dfi:hover{background:var(--bg2h)}.dfi.on{background:var(--bg2a);font-weight:500}
+.dfi .fi{font-family:var(--fm);font-size:10px;color:var(--tx3)}
+.dbd{flex:1;overflow-y:auto;padding:16px;font-family:var(--fs);font-size:13px;line-height:1.7;color:var(--tx2)}
+.dpa{padding:10px 12px;border-top:1px solid var(--bdL);display:flex;gap:6px}
+.dab{flex:1;padding:7px 10px;background:var(--bgW);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx2);font-size:12px;cursor:pointer;transition:var(--t);text-align:center}
+.dab:hover{border-color:var(--bdF);color:var(--tx)}
+
+.tc{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:1000}
+.toast{padding:8px 16px;background:var(--bgD);color:var(--txI);border-radius:var(--rp);font-size:13px;opacity:0;transform:translateY(8px);transition:all .2s ease;white-space:nowrap}
+.toast.v{opacity:1;transform:translateY(0)}
+</style>
+</head>
+<body>
+
+<div class="sb">
+  <div class="sb-top">
+    <button class="nb" onclick="newSession()"><span style="opacity:.5;font-size:16px">+</span> New chat</button>
+  </div>
+  <div class="prog" id="progBox" style="display:none">
+    <div class="prog-label"><span>Paper Progress</span><span id="progPct">0%</span></div>
+    <div class="prog-bar"><div class="prog-fill" id="progFill" style="width:0%"></div></div>
+    <div class="prog-stats"><span id="progWords">0 words</span><span id="progPages">0 pages</span></div>
+  </div>
+  <button class="bib-btn" onclick="importBib()">📚 Import BibTeX / Zotero</button>
+  <div class="sl" id="sList"></div>
+  <div class="sft">
+    <div class="ss"><span>Sources</span><span id="sS">—</span></div>
+    <div class="ss"><span>Chunks</span><span id="sC">—</span></div>
+    <div class="ss"><span>Citations</span><span id="sCi">—</span></div>
+    <div class="ss"><span>Verified</span><span id="sCv">—</span></div>
+  </div>
+</div>
+
+<div class="mn">
+  <div class="tb">
+    <div class="mp">
+      <button class="mb on" data-m="chat" onclick="setMode('chat')">Chat</button>
+      <button class="mb" data-m="draft" onclick="setMode('draft')">Draft</button>
+      <button class="mb" data-m="synthesize" onclick="setMode('synthesize')">Synth</button>
+      <button class="mb" data-m="review" onclick="setMode('review')">Review</button>
+      <button class="mb" data-m="cite" onclick="setMode('cite')">Cite</button>
+      <button class="mb" data-m="transition" onclick="setMode('transition')">Transitions</button>
+      <button class="mb" data-m="consistency" onclick="setMode('consistency')">Consistency</button>
+      <button class="mb" data-m="structure" onclick="setMode('structure')">Structure</button>
+    </div>
+    <div class="tsp"></div>
+    <select class="sec-sel" id="secSel" onchange="S.secId=this.value" title="Working section">
+      <option value="">— section —</option>
+    </select>
+    <button class="dt" id="dTog" onclick="togDoc()">📄 Docs</button>
+    <span class="ml2" id="mLab"></span>
+  </div>
+
+  <div class="ca" id="cArea">
+    <div class="cs" id="cScroll">
+      <div class="emp" id="empty">
+        <div class="elg">✦</div>
+        <h2>What are you working on?</h2>
+        <p>Responses stream in real-time. Heavy tasks (Draft, Synth, Review) use Opus with extended thinking. Chat and Cite use Sonnet for speed.</p>
+        <div class="qas">
+          <button class="qa" onclick="qs('draft','Draft the theoretical framework section on psychological ownership')">Draft: Psych. ownership</button>
+          <button class="qa" onclick="qs('synthesize','Synthesize co-creation literature across Vargo, Lusch, Prahalad')">Synthesize: Co-creation</button>
+          <button class="qa" onclick="qs('transition','Analyze transition into this section')">Check: Transitions</button>
+          <button class="qa" onclick="qs('consistency','Check section for terminology and argument consistency')">Check: Consistency</button>
+          <button class="qa" onclick="qs('structure','What gaps exist in my paper structure?')">Analyze: Structure</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ia">
+    <div class="ic">
+      <div class="ib">
+        <textarea id="inp" rows="1" placeholder="Ask something about your paper..." onkeydown="hk(event)" oninput="ag(this)"></textarea>
+        <button class="sb2" id="sBtn" onclick="send()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+      </div>
+      <div class="im">
+        <span class="ih" id="iH">Chat · Shift+Enter for newline</span>
+        <div class="ov">
+          <div class="ov-grp">
+            <span class="ov-label">Model</span>
+            <button class="ov-pill on" data-ov="model" data-v="" onclick="setOv('model',this)">Auto</button>
+            <button class="ov-pill" data-ov="model" data-v="claude-opus-4-6" onclick="setOv('model',this)">Opus</button>
+            <button class="ov-pill" data-ov="model" data-v="claude-sonnet-4-5-20250929" onclick="setOv('model',this)">Sonnet</button>
+          </div>
+          <div class="ov-grp">
+            <span class="ov-label">Think</span>
+            <button class="ov-pill on" data-ov="think" data-v="" onclick="setOv('think',this)">Auto</button>
+            <button class="ov-pill" data-ov="think" data-v="10000" onclick="setOv('think',this)">On</button>
+            <button class="ov-pill" data-ov="think" data-v="0" onclick="setOv('think',this)">Off</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="dp" id="dPan">
+  <div class="dph"><h3 id="dTit">Documents</h3><button class="cpb" onclick="togDoc()">×</button></div>
+  <div class="dfl" id="dFL"></div>
+  <div class="dbd" id="dBd"><p style="color:var(--tx3);text-align:center;margin-top:40px">Select a document above</p></div>
+  <div class="dpa">
+    <button class="dab" onclick="sendForReview()">Review in chat</button>
+    <button class="dab" onclick="syncDoc()">Sync to structure</button>
+    <button class="dab" onclick="xDocx()">Export .docx</button>
+  </div>
+</div>
+
+<div class="tc"><div class="toast" id="toast"></div></div>
+
+<script>
+let S={ses:null,mode:'chat',loading:false,dpOpen:false,dPath:'',dData:null,lastResp:'',sessions:[],secId:'',structure:null,streamEl:null,streamText:'',modelInfo:null,ovModel:'',ovThink:''};
+
+function setOv(group,btn){
+  const v=btn.dataset.v;
+  if(group==='model')S.ovModel=v;
+  else S.ovThink=v;
+  document.querySelectorAll(`.ov-pill[data-ov="${group}"]`).forEach(b=>{
+    b.classList.remove('on','on-opus','on-sonnet');
+  });
+  btn.classList.add('on');
+  if(group==='model'&&v.includes('opus'))btn.classList.add('on-opus');
+  if(group==='model'&&v.includes('sonnet'))btn.classList.add('on-sonnet');
+}
+
+document.addEventListener('DOMContentLoaded',async()=>{
+  await Promise.all([loadSt(),loadSes(),loadDL(),loadStruct()]);
+  document.getElementById('inp').focus();
+});
+
+async function api(u,o={}){return(await fetch(u,{headers:{'Content-Type':'application/json'},...o})).json()}
+
+async function loadSt(){
+  try{const s=await api('/api/status');
+  document.getElementById('sS').textContent=s.source_count;
+  document.getElementById('sC').textContent=s.chunk_count.toLocaleString();
+  document.getElementById('sCi').textContent=s.citation_stats?.total||s.citation_count;
+  document.getElementById('sCv').textContent=s.citation_stats?.verified_from_bibtex||0;
+  S.modelInfo=s.model_routing;
+  }catch(e){}
+}
+
+async function loadStruct(){
+  try{const d=await api('/api/structure');S.structure=d;const p=d.progress;
+  if(p.total_sections>0){document.getElementById('progBox').style.display='block';document.getElementById('progPct').textContent=p.weighted_pct+'%';document.getElementById('progFill').style.width=p.weighted_pct+'%';document.getElementById('progWords').textContent=p.total_words.toLocaleString()+' words';document.getElementById('progPages').textContent='~'+p.page_estimate+' pages'}
+  const sel=document.getElementById('secSel');sel.innerHTML='<option value="">— section —</option>';
+  d.sections.forEach(s=>{const i=s.parent_id?'\u00a0\u00a0':'';sel.innerHTML+=`<option value="${s.id}">${i}${s.id} ${s.title}</option>`});
+  }catch(e){}
+}
+
+async function loadSes(){S.sessions=await api('/api/sessions');renderSL()}
+function renderSL(){
+  const el=document.getElementById('sList');const g=grp(S.sessions);let h='';
+  for(const[l,items]of g){h+=`<div class="dgl">${esc(l)}</div>`;for(const s of items){h+=`<div class="si ${S.ses?.id===s.id?'on':''}" onclick="loadS('${s.id}')"><span class="t">${esc(s.title)}</span><span class="ax"><button class="db" onclick="event.stopPropagation();delS('${s.id}')">✕</button></span></div>`}}
+  el.innerHTML=h||'<div style="padding:12px;color:var(--tx3);font-size:13px;text-align:center">No conversations yet</div>';
+}
+function grp(ss){const now=new Date(),td=new Date(now.getFullYear(),now.getMonth(),now.getDate()),yd=new Date(td);yd.setDate(yd.getDate()-1);const wk=new Date(td);wk.setDate(wk.getDate()-7);const m=new Map();for(const s of ss){const d=new Date(s.updated_at);let l;if(d>=td)l='Today';else if(d>=yd)l='Yesterday';else if(d>=wk)l='Previous 7 days';else l=d.toLocaleDateString('en',{month:'long',year:'numeric'});if(!m.has(l))m.set(l,[]);m.get(l).push(s)}return m}
+async function newSession(){S.ses=null;S.lastResp='';document.getElementById('cScroll').innerHTML='<div class="emp" id="empty"><div class="elg">✦</div><h2>What are you working on?</h2><p>Responses stream in real-time. Heavy tasks use Opus + extended thinking.</p><div class="qas"><button class="qa" onclick="qs(\'draft\',\'Draft section on...\')">Draft</button><button class="qa" onclick="qs(\'transition\',\'Check transitions\')">Transitions</button><button class="qa" onclick="qs(\'consistency\',\'Check consistency\')">Consistency</button><button class="qa" onclick="qs(\'structure\',\'Analyze structure\')">Structure</button></div></div>';renderSL();document.getElementById('inp').focus()}
+async function loadS(sid){const d=await api(`/api/sessions/${sid}`);if(d.error)return;S.ses=d.session;setMode(d.session.mode,false);const sc=document.getElementById('cScroll');sc.innerHTML='';d.messages.forEach(m=>addMsg(m.role,m.content,m.context_sources,false));sb();renderSL();document.getElementById('inp').focus()}
+async function delS(sid){if(!confirm('Delete?'))return;await api(`/api/sessions/${sid}`,{method:'DELETE'});if(S.ses?.id===sid)newSession();loadSes()}
+
+function setMode(m,upd=true){
+  S.mode=m;document.querySelectorAll('.mb').forEach(b=>b.classList.toggle('on',b.dataset.m===m));
+  const h={chat:'Chat',draft:'Draft',synthesize:'Synthesize',review:'Review',cite:'Cite',transition:'Transition',consistency:'Consistency',structure:'Structure'};
+  const p={chat:'Ask something...',draft:'Describe section to draft (select section above)...',synthesize:'Topic for literature synthesis...',review:'Paste or describe text to review...',cite:'What citation?',transition:'Select a section and describe the transition to analyze',consistency:'Paste section text to check...',structure:'Ask about paper structure or gaps...'};
+  if(upd){document.getElementById('iH').textContent=`${h[m]||'Chat'} · Shift+Enter for newline`;document.getElementById('inp').placeholder=p[m]||p.chat;
+    // Show which model this mode uses by default
+    const model=S.modelInfo?.[m]||'';if(model){document.getElementById('mLab').textContent=model.replace('claude-','').replace('-20250929','').replace('-4-6','')}
+    // Reset overrides to Auto when switching modes
+    S.ovModel='';S.ovThink='';
+    document.querySelectorAll('.ov-pill').forEach(b=>{b.classList.remove('on','on-opus','on-sonnet')});
+    document.querySelectorAll('.ov-pill[data-v=""]').forEach(b=>b.classList.add('on'));
+  }}
+
+function addMsg(role,content,src,anim=true,model=''){
+  const sc=document.getElementById('cScroll');const em=document.getElementById('empty');if(em)em.remove();
+  const d=document.createElement('div');d.className='msg';if(!anim)d.style.animation='none';
+  if(role==='assistant')S.lastResp=content;
+  let ft='';
+  if(role==='assistant'){const chips=src?.length?src.slice(0,6).map(s=>`<span class="sc">${esc(s.length>25?s.slice(0,22)+'...':s)}</span>`).join(''):'';ft=`<div class="mf">${chips}<button class="xb" onclick="xDocx()">Export .docx</button></div>`}
+  const mt=role==='assistant'&&S.mode!=='chat'?`<span class="mt">${S.mode}</span>`:'';
+  const mb=role==='assistant'&&model?`<span class="model-badge">${model.replace('claude-','').replace('-20250929','')}</span>`:'';
+  d.innerHTML=`<div class="mlb ${role==='user'?'u':'a'}">${role==='user'?'You':'Agent'} ${mt}${mb}</div><div class="mc ${role==='user'?'uc':'ac'}">${role==='assistant'?rmd(content):esc(content)}</div>${ft}`;
+  sc.appendChild(d);sb();return d;
+}
+
+/* Streaming message builder */
+function startStream(){
+  const sc=document.getElementById('cScroll');const em=document.getElementById('empty');if(em)em.remove();
+  const d=document.createElement('div');d.className='msg';d.id='streamMsg';
+  d.innerHTML=`<div class="mlb a">Agent <span class="mt" id="streamMode">${S.mode}</span> <span class="model-badge" id="streamModel"></span></div>
+    <div class="think-box" id="thinkBox"><div class="think-label">Thinking...</div><div id="thinkText"></div></div>
+    <div class="mc ac" id="streamContent"></div>
+    <div class="lbar" id="streamStatus"><div class="dots"><span></span><span></span><span></span></div><span>Connecting...</span></div>`;
+  sc.appendChild(d);S.streamText='';sb();return d;
+}
+function appendStreamText(t){S.streamText+=t;document.getElementById('streamContent').innerHTML=rmd(S.streamText);sb()}
+function appendThinkText(t){const el=document.getElementById('thinkText');if(el){el.textContent+=t;el.scrollTop=el.scrollHeight}}
+function finishStream(src,model){
+  const st=document.getElementById('streamStatus');if(st)st.remove();
+  S.lastResp=S.streamText;
+  if(src?.length){const sc=document.getElementById('streamMsg');if(sc){const ft=document.createElement('div');ft.className='mf';ft.innerHTML=src.slice(0,6).map(s=>`<span class="sc">${esc(s.length>25?s.slice(0,22)+'...':s)}</span>`).join('')+`<button class="xb" onclick="xDocx()">Export .docx</button>`;sc.appendChild(ft)}}
+}
+
+/* SSE-based send */
+async function send(){
+  const inp=document.getElementById('inp');const m=inp.value.trim();if(!m||S.loading)return;
+  S.loading=true;document.getElementById('sBtn').disabled=true;
+  addMsg('user',m);inp.value='';ag(inp);
+  startStream();
+
+  try{
+    const pay={session_id:S.ses?.id||null,message:m,mode:S.mode,section_id:S.secId};
+    if(S.ovModel)pay.model_override=S.ovModel;
+    if(S.ovThink!=='')pay.thinking_override=parseInt(S.ovThink);
+    const resp=await fetch('/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(pay)});
+    const reader=resp.body.getReader();const decoder=new TextDecoder();let buf='';let model='';
+
+    while(true){
+      const{done,value}=await reader.read();
+      if(done)break;
+      buf+=decoder.decode(value,{stream:true});
+      const lines=buf.split('\n');buf=lines.pop()||'';
+      let evtType='';
+      for(const line of lines){
+        if(line.startsWith('event: ')){evtType=line.slice(7)}
+        else if(line.startsWith('data: ')){
+          const data=JSON.parse(line.slice(6));
+          if(evtType==='model'){model=data.model||'';const el=document.getElementById('streamModel');if(el)el.textContent=model.replace('claude-','').replace('-20250929','');if(data.thinking_enabled){document.getElementById('streamStatus').querySelector('span:last-child').textContent='Thinking...'}}
+          else if(evtType==='thinking_start'){document.getElementById('thinkBox').classList.add('visible');document.getElementById('streamStatus').querySelector('span:last-child').textContent='Thinking...'}
+          else if(evtType==='thinking'){appendThinkText(data.text)}
+          else if(evtType==='thinking_done'){document.getElementById('streamStatus').querySelector('span:last-child').textContent='Writing...'}
+          else if(evtType==='text'){appendStreamText(data.text)}
+          else if(evtType==='done'){
+            if(!S.ses&&data.session_id){S.ses={id:data.session_id};loadSes()}
+            finishStream(data.sources,model);
+            if(data.citations?.length)toast(`${data.citations.length} citations tracked`);
+          }
+          else if(evtType==='error'){appendStreamText(`\n\n**Error:** ${data.error}`)}
+          evtType='';
+        }
+      }
+    }
+  }catch(e){appendStreamText(`\n\n**Error:** ${e.message}`)}
+  S.loading=false;document.getElementById('sBtn').disabled=false;document.getElementById('inp').focus();
+}
+
+function hk(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}}
+function ag(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,180)+'px'}
+function qs(mode,text){setMode(mode);const i=document.getElementById('inp');i.value=text;ag(i);i.focus()}
+function sb(){const a=document.getElementById('cArea');requestAnimationFrame(()=>a.scrollTop=a.scrollHeight)}
+
+// Docs
+async function loadDL(){try{const docs=await api('/api/documents');document.getElementById('dFL').innerHTML=docs.map(d=>`<div class="dfi" onclick="openD('${esc(d.path)}')" data-p="${esc(d.path)}"><span>${esc(d.filename)}</span><span class="fi">~${d.page_estimate}p</span></div>`).join('')||'<div style="padding:10px;color:var(--tx3);font-size:12px">No .docx files found</div>'}catch(e){}}
+function togDoc(){S.dpOpen=!S.dpOpen;document.getElementById('dPan').classList.toggle('open',S.dpOpen);document.getElementById('dTog').classList.toggle('has',S.dpOpen)}
+async function openD(path){try{const d=await api('/api/documents/read',{method:'POST',body:JSON.stringify({path})});if(d.error)return toast('Error: '+d.error);S.dPath=path;S.dData=d;document.getElementById('dTit').textContent=path.split('/').pop();document.getElementById('dBd').innerHTML=rmd(d.full_text);document.querySelectorAll('.dfi').forEach(el=>el.classList.toggle('on',el.dataset.p===path));if(!S.dpOpen)togDoc();toast(`${d.metadata.word_count.toLocaleString()} words`)}catch(e){toast('Failed')}}
+function sendForReview(){if(!S.dData)return toast('Open a document');setMode('review');const inp=document.getElementById('inp');inp.value=`Review from ${S.dPath.split('/').pop()}:\n\n${S.dData.full_text.substring(0,6000)}`;ag(inp);inp.focus()}
+async function syncDoc(){if(!S.dPath||!S.secId)return toast('Open doc + select section');try{const d=await api('/api/structure/sync-docx',{method:'POST',body:JSON.stringify({section_id:S.secId,docx_path:S.dPath})});if(d.ok){toast(`Synced: ${d.word_count} words`);loadStruct()}else toast(d.error)}catch(e){toast('Sync failed')}}
+async function xDocx(){if(!S.lastResp)return toast('No response');try{const ts=new Date().toISOString().slice(0,16).replace(/[T:]/g,'_');const d=await api('/api/documents/write',{method:'POST',body:JSON.stringify({content:S.lastResp,filename:`agent_${ts}.docx`})});if(d.path){window.open(`/api/documents/download/${encodeURIComponent(d.filename)}`,'_blank');toast('Exported')}}catch(e){toast('Failed')}}
+
+// BibTeX import
+async function importBib(){
+  try{
+    let d=await api('/api/citations/import-bibtex',{method:'POST',body:JSON.stringify({})});
+    if(d.error&&d.error.includes('not found')){d=await api('/api/citations/import-zotero',{method:'POST',body:JSON.stringify({})})}
+    if(d.error)return toast(d.error);
+    toast(`Imported ${d.imported} references (${d.pdf_matches||0} matched to PDFs)`);loadSt();
+  }catch(e){toast('Import failed — place references.bib or references.json in project root')}
+}
+
+function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function rmd(t){if(!t)return'';let h=esc(t);h=h.replace(/```(\w*)\n([\s\S]*?)```/g,'<pre><code>$2</code></pre>');h=h.replace(/`([^`]+)`/g,'<code>$1</code>');h=h.replace(/^#### (.+)$/gm,'<h4>$1</h4>');h=h.replace(/^### (.+)$/gm,'<h3>$1</h3>');h=h.replace(/^## (.+)$/gm,'<h2>$1</h2>');h=h.replace(/^# (.+)$/gm,'<h1>$1</h1>');h=h.replace(/\*\*\*(.+?)\*\*\*/g,'<strong><em>$1</em></strong>');h=h.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');h=h.replace(/\*(.+?)\*/g,'<em>$1</em>');h=h.replace(/^&gt; (.+)$/gm,'<blockquote>$1</blockquote>');h=h.replace(/^- (.+)$/gm,'<li>$1</li>');h=h.replace(/^(\d+)\. (.+)$/gm,'<li>$2</li>');h=h.replace(/\n\n/g,'</p><p>');h=h.replace(/\n/g,'<br>');return'<p>'+h+'</p>'}
+function toast(m){const el=document.getElementById('toast');el.textContent=m;el.classList.add('v');clearTimeout(el._t);el._t=setTimeout(()=>el.classList.remove('v'),3000)}
+</script>
+</body>
+</html>

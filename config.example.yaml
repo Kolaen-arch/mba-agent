@@ -1,0 +1,46 @@
+# ── API ──
+anthropic_api_key: "sk-ant-..."
+
+# ── Default model (fallback if mode not in routing map) ──
+model: "claude-opus-4-6"
+max_output_tokens: 16000
+
+# ── Model routing: which model to use per task mode ──
+# Opus for heavy reasoning, Sonnet for speed + cost savings
+model_routing:
+  draft: "claude-opus-4-6"
+  synthesize: "claude-opus-4-6"
+  review: "claude-opus-4-6"
+  transition: "claude-opus-4-6"
+  consistency: "claude-opus-4-6"
+  structure: "claude-opus-4-6"
+  chat: "claude-sonnet-4-5-20250929"
+  cite: "claude-sonnet-4-5-20250929"
+  edit_docx: "claude-sonnet-4-5-20250929"
+
+# ── Extended thinking budget (tokens) per mode ──
+# Set to 0 to disable thinking for that mode
+# Higher = deeper reasoning but slower + more expensive
+thinking_budget:
+  draft: 10000
+  synthesize: 12000
+  review: 8000
+  transition: 6000
+  consistency: 6000
+  structure: 8000
+  chat: 0
+  cite: 0
+  edit_docx: 0
+
+# ── RAG ──
+chroma_persist_dir: "./.chroma_db"
+embedding_model: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+max_retrieval_chunks: 25
+
+# ── Directories ──
+papers_dir: "./papers"
+current_draft_dir: "./current_draft"
+output_dir: "./output"
+
+# ── Paper ──
+paper_topic: "MBA Final Paper"

@@ -1,0 +1,9 @@
+config.yaml
+.chroma_db/
+output/
+papers/
+current_draft/
+data/
+__pycache__/
+*.pyc
+.venv/

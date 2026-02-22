@@ -1,0 +1,296 @@
+"""
+DOCX handler: read, write, and modify Word documents.
+Uses python-docx for structured read/write operations.
+"""
+
+import os
+import re
+from pathlib import Path
+from typing import Optional
+
+from docx import Document
+from docx.shared import Pt, Inches, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+
+def read_docx(filepath: str) -> dict:
+    """
+    Read a .docx file and extract structured content.
+    Returns dict with full_text, sections (by heading), and metadata.
+    """
+    doc = Document(filepath)
+
+    full_text_parts = []
+    sections = []
+    current_section = {"heading": "Preamble", "level": 0, "paragraphs": []}
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        style_name = para.style.name if para.style else ""
+
+        # Detect headings
+        if style_name.startswith("Heading"):
+            # Save previous section
+            if current_section["paragraphs"]:
+                sections.append(current_section)
+
+            try:
+                level = int(style_name.replace("Heading ", "").replace("Heading", "0"))
+            except ValueError:
+                level = 1
+
+            current_section = {"heading": text, "level": level, "paragraphs": []}
+            full_text_parts.append(f"\n{'#' * level} {text}\n")
+        elif text:
+            current_section["paragraphs"].append(text)
+            full_text_parts.append(text)
+
+    # Don't forget last section
+    if current_section["paragraphs"]:
+        sections.append(current_section)
+
+    # Extract tables
+    tables = []
+    for table in doc.tables:
+        table_data = []
+        for row in table.rows:
+            row_data = [cell.text.strip() for cell in row.cells]
+            table_data.append(row_data)
+        if table_data:
+            tables.append(table_data)
+
+    # Core properties
+    props = doc.core_properties
+    metadata = {
+        "title": props.title or "",
+        "author": props.author or "",
+        "subject": props.subject or "",
+        "created": str(props.created) if props.created else "",
+        "modified": str(props.modified) if props.modified else "",
+        "paragraph_count": len(doc.paragraphs),
+        "table_count": len(doc.tables),
+        "word_count": sum(len(p.text.split()) for p in doc.paragraphs),
+        "page_estimate": sum(len(p.text.split()) for p in doc.paragraphs) // 250,
+    }
+
+    return {
+        "full_text": "\n".join(full_text_parts),
+        "sections": sections,
+        "tables": tables,
+        "metadata": metadata,
+    }
+
+
+def read_docx_section(filepath: str, heading: str) -> Optional[str]:
+    """Read a specific section from a docx by heading name."""
+    data = read_docx(filepath)
+    for section in data["sections"]:
+        if section["heading"].lower() == heading.lower():
+            return "\n\n".join(section["paragraphs"])
+    return None
+
+
+def write_docx_from_markdown(
+    markdown_text: str,
+    output_path: str,
+    title: str = "",
+    author: str = "",
+) -> str:
+    """
+    Convert markdown-formatted text to a .docx file.
+    Handles headings (#, ##, ###), bold (**), italic (*), and paragraphs.
+    """
+    doc = Document()
+
+    # Set default font
+    style = doc.styles["Normal"]
+    font = style.font
+    font.name = "Times New Roman"
+    font.size = Pt(12)
+
+    # Set properties
+    if title:
+        doc.core_properties.title = title
+    if author:
+        doc.core_properties.author = author
+
+    lines = markdown_text.split("\n")
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].strip()
+
+        if not line:
+            i += 1
+            continue
+
+        # Headings
+        if line.startswith("### "):
+            doc.add_heading(line[4:], level=3)
+        elif line.startswith("## "):
+            doc.add_heading(line[3:], level=2)
+        elif line.startswith("# "):
+            doc.add_heading(line[2:], level=1)
+        else:
+            # Regular paragraph — handle inline formatting
+            para = doc.add_paragraph()
+            _add_formatted_runs(para, line)
+
+        i += 1
+
+    doc.save(output_path)
+    return output_path
+
+
+def _add_formatted_runs(paragraph, text: str) -> None:
+    """Parse inline markdown (bold, italic) into docx runs."""
+    # Pattern: **bold**, *italic*, ***bold italic***
+    pattern = r'(\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*)'
+    parts = re.split(pattern, text)
+
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        if part is None:
+            i += 1
+            continue
+        if part.startswith("***") and part.endswith("***"):
+            run = paragraph.add_run(parts[i + 1])
+            run.bold = True
+            run.italic = True
+            i += 2
+        elif part.startswith("**") and part.endswith("**"):
+            run = paragraph.add_run(parts[i + 2] if i + 2 < len(parts) else part[2:-2])
+            run.bold = True
+            i += 3
+        elif part.startswith("*") and part.endswith("*") and not part.startswith("**"):
+            run = paragraph.add_run(parts[i + 3] if i + 3 < len(parts) else part[1:-1])
+            run.italic = True
+            i += 4
+        else:
+            if part:
+                paragraph.add_run(part)
+            i += 1
+
+
+def apply_changes_to_docx(
+    source_path: str,
+    changes: list[dict],
+    output_path: str,
+) -> str:
+    """
+    Apply a list of changes to a docx file.
+
+    Each change is a dict:
+    {
+        "type": "replace" | "insert_after" | "delete" | "append",
+        "section_heading": "...",      # for section-level ops
+        "find_text": "...",            # for paragraph-level find
+        "new_text": "...",             # replacement or new text
+        "heading_level": 2,            # for insert_after with new heading
+    }
+    """
+    doc = Document(source_path)
+    changes_made = []
+
+    for change in changes:
+        ctype = change.get("type", "")
+
+        if ctype == "replace" and change.get("find_text"):
+            find = change["find_text"]
+            replace = change.get("new_text", "")
+            for para in doc.paragraphs:
+                if find in para.text:
+                    # Preserve formatting of first run, replace text
+                    for run in para.runs:
+                        if find in run.text:
+                            run.text = run.text.replace(find, replace)
+                            changes_made.append(f"Replaced: '{find[:50]}...' → '{replace[:50]}...'")
+                            break
+
+        elif ctype == "append" and change.get("new_text"):
+            text = change["new_text"]
+            if change.get("heading_level"):
+                doc.add_heading(text, level=change["heading_level"])
+                changes_made.append(f"Appended heading: {text[:50]}")
+            else:
+                para = doc.add_paragraph()
+                _add_formatted_runs(para, text)
+                changes_made.append(f"Appended paragraph: {text[:50]}...")
+
+        elif ctype == "insert_after" and change.get("section_heading"):
+            target_heading = change["section_heading"].lower()
+            new_text = change.get("new_text", "")
+
+            for idx, para in enumerate(doc.paragraphs):
+                style_name = para.style.name if para.style else ""
+                if style_name.startswith("Heading") and para.text.strip().lower() == target_heading:
+                    # Find the end of this section (next heading of same or higher level)
+                    insert_idx = idx + 1
+                    try:
+                        current_level = int(style_name.replace("Heading ", "").replace("Heading", "1"))
+                    except ValueError:
+                        current_level = 1
+
+                    for j in range(idx + 1, len(doc.paragraphs)):
+                        sn = doc.paragraphs[j].style.name if doc.paragraphs[j].style else ""
+                        if sn.startswith("Heading"):
+                            try:
+                                jlevel = int(sn.replace("Heading ", "").replace("Heading", "1"))
+                            except ValueError:
+                                jlevel = 1
+                            if jlevel <= current_level:
+                                insert_idx = j
+                                break
+                    else:
+                        insert_idx = len(doc.paragraphs)
+
+                    # We can't easily insert at arbitrary positions with python-docx,
+                    # so we append and note the location
+                    para_new = doc.add_paragraph()
+                    _add_formatted_runs(para_new, new_text)
+                    changes_made.append(
+                        f"Added after '{target_heading}': {new_text[:50]}... "
+                        f"(note: appended at end — manual reorder may be needed)"
+                    )
+                    break
+
+        elif ctype == "delete" and change.get("find_text"):
+            find = change["find_text"]
+            for para in doc.paragraphs:
+                if find in para.text:
+                    # Clear the paragraph (python-docx can't delete paragraphs easily)
+                    for run in para.runs:
+                        run.text = ""
+                    para.text = ""
+                    changes_made.append(f"Deleted paragraph containing: '{find[:50]}...'")
+                    break
+
+    doc.save(output_path)
+    return "\n".join(changes_made) if changes_made else "No changes applied."
+
+
+def list_docx_files(directory: str) -> list[dict]:
+    """List all .docx files in a directory with basic info."""
+    path = Path(directory)
+    files = []
+    for f in sorted(path.glob("**/*.docx")):
+        try:
+            doc = Document(str(f))
+            word_count = sum(len(p.text.split()) for p in doc.paragraphs)
+            files.append({
+                "path": str(f),
+                "filename": f.name,
+                "relative_path": str(f.relative_to(path)),
+                "word_count": word_count,
+                "page_estimate": word_count // 250,
+            })
+        except Exception:
+            files.append({
+                "path": str(f),
+                "filename": f.name,
+                "relative_path": str(f.relative_to(path)),
+                "word_count": 0,
+                "page_estimate": 0,
+            })
+    return files
