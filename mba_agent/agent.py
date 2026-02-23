@@ -69,12 +69,14 @@ class MBAAgent:
         model_map: dict | None = None,
         thinking_map: dict | None = None,
         max_output_tokens: int = 16000,
+        enable_prompt_cache: bool = True,
     ):
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = anthropic.Anthropic(api_key=api_key, timeout=120.0)
         self.default_model = default_model
         self.model_map = model_map or DEFAULT_MODEL_MAP
         self.thinking_map = thinking_map or DEFAULT_THINKING_MAP
         self.max_output_tokens = max_output_tokens
+        self.enable_prompt_cache = enable_prompt_cache
         self.conversation_history: list[dict] = []
 
     def get_model(self, mode: str) -> str:
@@ -82,6 +84,18 @@ class MBAAgent:
 
     def get_thinking_budget(self, mode: str) -> int:
         return self.thinking_map.get(mode, 0)
+
+    def _build_system_with_cache(self, system: str) -> list[dict] | str:
+        """Wrap system prompt in cache_control block for prompt caching."""
+        if not self.enable_prompt_cache:
+            return system
+        return [
+            {
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
 
     def _build_message(self, user_message: str, context: str, max_context_tokens: int = 80000) -> str:
         """Build the full user message with context, respecting token budget."""
@@ -128,7 +142,7 @@ class MBAAgent:
         kwargs = {
             "model": model,
             "max_tokens": self.max_output_tokens,
-            "system": system,
+            "system": self._build_system_with_cache(system),
             "messages": messages,
         }
 
@@ -195,7 +209,7 @@ class MBAAgent:
         kwargs = {
             "model": model,
             "max_tokens": self.max_output_tokens,
-            "system": system,
+            "system": self._build_system_with_cache(system),
             "messages": messages,
         }
 
@@ -211,27 +225,30 @@ class MBAAgent:
         full_text = ""
         is_thinking = False
 
-        with self.client.messages.stream(**kwargs) as stream:
-            for event in stream:
-                if hasattr(event, 'type'):
-                    if event.type == 'content_block_start':
-                        if hasattr(event, 'content_block'):
-                            if event.content_block.type == 'thinking':
-                                is_thinking = True
-                                yield {"type": "thinking_start"}
-                            elif event.content_block.type == 'text':
+        try:
+            with self.client.messages.stream(**kwargs) as stream:
+                for event in stream:
+                    if hasattr(event, 'type'):
+                        if event.type == 'content_block_start':
+                            if hasattr(event, 'content_block'):
+                                if event.content_block.type == 'thinking':
+                                    is_thinking = True
+                                    yield {"type": "thinking_start"}
+                                elif event.content_block.type == 'text':
+                                    is_thinking = False
+                        elif event.type == 'content_block_delta':
+                            if hasattr(event, 'delta'):
+                                if hasattr(event.delta, 'thinking'):
+                                    yield {"type": "thinking", "text": event.delta.thinking}
+                                elif hasattr(event.delta, 'text'):
+                                    full_text += event.delta.text
+                                    yield {"type": "text", "text": event.delta.text}
+                        elif event.type == 'content_block_stop':
+                            if is_thinking:
+                                yield {"type": "thinking_done"}
                                 is_thinking = False
-                    elif event.type == 'content_block_delta':
-                        if hasattr(event, 'delta'):
-                            if hasattr(event.delta, 'thinking'):
-                                yield {"type": "thinking", "text": event.delta.thinking}
-                            elif hasattr(event.delta, 'text'):
-                                full_text += event.delta.text
-                                yield {"type": "text", "text": event.delta.text}
-                    elif event.type == 'content_block_stop':
-                        if is_thinking:
-                            yield {"type": "thinking_done"}
-                            is_thinking = False
+        except GeneratorExit:
+            return  # Client disconnected, clean exit
 
         if use_history:
             self.conversation_history.append(

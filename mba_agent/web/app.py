@@ -118,6 +118,32 @@ def create_app() -> Flask:
         db.delete_session(sid)
         return jsonify({"ok": True})
 
+    # ── Mode auto-inference (hidden modes routed from chat) ──
+
+    _CITE_PATTERNS = [
+        re.compile(r'\([A-Z][a-z]+.*\d{4}\)'),
+        re.compile(r'\bcite\b', re.IGNORECASE),
+        re.compile(r'\breference\b.*\bfor\b', re.IGNORECASE),
+        re.compile(r'\bfind\s+source\b', re.IGNORECASE),
+    ]
+    _STRUCTURE_PATTERNS = [
+        re.compile(r'\b(outline|structure|gaps?)\b', re.IGNORECASE),
+        re.compile(r'\bchapter\b.*\b(order|sequence|missing)\b', re.IGNORECASE),
+        re.compile(r'\bsections?\b.*\b(reorganize|reorder|add|remove)\b', re.IGNORECASE),
+    ]
+
+    def _infer_mode(message: str, requested_mode: str) -> str:
+        """Auto-infer hidden modes when user sends from chat."""
+        if requested_mode != 'chat':
+            return requested_mode
+        for p in _CITE_PATTERNS:
+            if p.search(message):
+                return 'cite'
+        for p in _STRUCTURE_PATTERNS:
+            if p.search(message):
+                return 'structure'
+        return 'chat'
+
     # ── Helper: build context for a mode ──
 
     def _build_context(message, mode, data):
@@ -140,6 +166,14 @@ def create_app() -> Flask:
             gloss = build_glossary_context(ps)
             if gloss:
                 extra += "\n\n" + gloss
+        elif mode in ("draft", "review") and ps.sections and ps.red_thread:
+            # Auto-inject red thread + argument chain for draft/review even without section_id
+            parts = [f"[RED THREAD — Core argument]: {ps.red_thread}"]
+            if ps.argument_chain:
+                parts.append("[ARGUMENT CHAIN]:\n" + "\n".join(
+                    f"{i+1}. {c}" for i, c in enumerate(ps.argument_chain)
+                ))
+            extra = "\n\n".join(parts)
 
         # Add verified citation context for draft/synthesize
         if mode in ("draft", "synthesize", "cite"):
@@ -167,7 +201,7 @@ def create_app() -> Flask:
         data = request.json or {}
         session_id = data.get("session_id")
         message = data.get("message", "").strip()
-        mode = data.get("mode", "chat")
+        mode = _infer_mode(message, data.get("mode", "chat"))
 
         model_override = data.get("model_override", "")
         thinking_override = data.get("thinking_override")  # None = use default, int = override

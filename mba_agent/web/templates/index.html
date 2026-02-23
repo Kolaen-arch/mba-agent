@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MBA Paper Agent</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
 /* ═══════════════════════════════════════════════════════
    DESIGN TOKENS — Academic Library
@@ -689,6 +690,23 @@ body {
 .send-btn:disabled { opacity: .3; cursor: not-allowed; }
 .send-btn svg { width: 16px; height: 16px; }
 
+.abort-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: var(--red);
+  color: var(--text-inverse);
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  transition: var(--ease);
+  flex-shrink: 0;
+}
+.abort-btn:hover { opacity: .85; }
+.abort-btn svg { width: 14px; height: 14px; }
+
 .input-meta {
   display: flex;
   justify-content: space-between;
@@ -885,12 +903,8 @@ body {
     <div class="mode-pills">
       <button class="mode-pill active" data-m="chat" onclick="setMode('chat')">Chat</button>
       <button class="mode-pill" data-m="draft" onclick="setMode('draft')">Draft</button>
-      <button class="mode-pill" data-m="synthesize" onclick="setMode('synthesize')">Synth</button>
       <button class="mode-pill" data-m="review" onclick="setMode('review')">Review</button>
-      <button class="mode-pill" data-m="cite" onclick="setMode('cite')">Cite</button>
-      <button class="mode-pill" data-m="transition" onclick="setMode('transition')">Transitions</button>
-      <button class="mode-pill" data-m="consistency" onclick="setMode('consistency')">Consistency</button>
-      <button class="mode-pill" data-m="structure" onclick="setMode('structure')">Structure</button>
+      <button class="mode-pill" data-m="synthesize" onclick="setMode('synthesize')">Synth</button>
     </div>
     <div class="toolbar-spacer"></div>
     <select class="section-select" id="secSel" onchange="S.secId=this.value" title="Working section">
@@ -907,11 +921,10 @@ body {
         <h2>What are you working on?</h2>
         <p>Responses stream in real-time. Heavy tasks (Draft, Synth, Review) use Opus with extended thinking. Chat and Cite use Sonnet for speed.</p>
         <div class="quick-actions">
-          <button class="quick-action" onclick="qs('draft','Draft the theoretical framework section on psychological ownership')">Draft: Psych. ownership</button>
-          <button class="quick-action" onclick="qs('synthesize','Synthesize co-creation literature across Vargo, Lusch, Prahalad')">Synthesize: Co-creation</button>
-          <button class="quick-action" onclick="qs('transition','Analyze transition into this section')">Check: Transitions</button>
-          <button class="quick-action" onclick="qs('consistency','Check section for terminology and argument consistency')">Check: Consistency</button>
-          <button class="quick-action" onclick="qs('structure','What gaps exist in my paper structure?')">Analyze: Structure</button>
+          <button class="quick-action" onclick="qs('chat','Discuss my theoretical framework')">Discuss framework</button>
+          <button class="quick-action" onclick="qs('draft','Draft section on...')">Draft a section</button>
+          <button class="quick-action" onclick="qs('review','Review this passage...')">Review passage</button>
+          <button class="quick-action" onclick="qs('synthesize','Synthesize literature on...')">Synthesize literature</button>
         </div>
       </div>
     </div>
@@ -926,6 +939,9 @@ body {
             <line x1="22" y1="2" x2="11" y2="13"/>
             <polygon points="22 2 15 22 11 13 2 9 22 2"/>
           </svg>
+        </button>
+        <button class="abort-btn" id="aBtn" onclick="abortStream()" title="Cancel (Esc)">
+          <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
         </button>
       </div>
       <div class="input-meta">
@@ -976,7 +992,7 @@ let S = {
   ses: null, mode: 'chat', loading: false, dpOpen: false,
   dPath: '', dData: null, lastResp: '', sessions: [],
   secId: '', structure: null, streamEl: null, streamText: '',
-  modelInfo: null, ovModel: '', ovThink: ''
+  modelInfo: null, ovModel: '', ovThink: '', abortCtrl: null
 };
 
 
@@ -1096,10 +1112,10 @@ async function newSession() {
       <h2>What are you working on?</h2>
       <p>Responses stream in real-time. Heavy tasks use Opus + extended thinking.</p>
       <div class="quick-actions">
-        <button class="quick-action" onclick="qs('draft','Draft section on...')">Draft</button>
-        <button class="quick-action" onclick="qs('transition','Check transitions')">Transitions</button>
-        <button class="quick-action" onclick="qs('consistency','Check consistency')">Consistency</button>
-        <button class="quick-action" onclick="qs('structure','Analyze structure')">Structure</button>
+        <button class="quick-action" onclick="qs('chat','Discuss my theoretical framework')">Discuss framework</button>
+        <button class="quick-action" onclick="qs('draft','Draft section on...')">Draft a section</button>
+        <button class="quick-action" onclick="qs('review','Review this passage...')">Review passage</button>
+        <button class="quick-action" onclick="qs('synthesize','Synthesize literature on...')">Synthesize literature</button>
       </div>
     </div>`;
   renderSL();
@@ -1279,7 +1295,9 @@ async function send() {
   if (!m || S.loading) return;
 
   S.loading = true;
-  document.getElementById('sBtn').disabled = true;
+  S.abortCtrl = new AbortController();
+  document.getElementById('sBtn').style.display = 'none';
+  document.getElementById('aBtn').style.display = 'flex';
   addMsg('user', m);
   inp.value = '';
   ag(inp);
@@ -1293,7 +1311,8 @@ async function send() {
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(pay)
+      body: JSON.stringify(pay),
+      signal: S.abortCtrl.signal
     });
 
     const reader = resp.body.getReader();
@@ -1342,11 +1361,26 @@ async function send() {
         }
       }
     }
-  } catch (e) { appendStreamText(`\n\n**Error:** ${e.message}`); }
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      appendStreamText('\n\n*[Cancelled]*');
+      const st = document.getElementById('streamStatus');
+      if (st) st.remove();
+    } else {
+      appendStreamText(`\n\n**Error:** ${e.message}`);
+    }
+  } finally {
+    S.abortCtrl = null;
+    S.loading = false;
+    document.getElementById('sBtn').style.display = '';
+    document.getElementById('aBtn').style.display = 'none';
+    document.getElementById('sBtn').disabled = false;
+    document.getElementById('inp').focus();
+  }
+}
 
-  S.loading = false;
-  document.getElementById('sBtn').disabled = false;
-  document.getElementById('inp').focus();
+function abortStream() {
+  if (S.abortCtrl) S.abortCtrl.abort();
 }
 
 
@@ -1457,25 +1491,40 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// Configure marked.js once
+marked.setOptions({ breaks: true, gfm: true, headerIds: false, mangle: false });
+
 function rmd(t) {
   if (!t) return '';
-  let h = esc(t);
-  h = h.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
-  h = h.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
-  h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  h = h.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  h = h.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-  h = h.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-  h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  h = h.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  h = h.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
-  h = h.replace(/^- (.+)$/gm, '<li>$1</li>');
-  h = h.replace(/^(\d+)\. (.+)$/gm, '<li>$2</li>');
-  h = h.replace(/\n\n/g, '</p><p>');
-  h = h.replace(/\n/g, '<br>');
-  return '<p>' + h + '</p>';
+  return marked.parse(t);
 }
+
+/* ═══════════════════════════════════════════════════════
+   KEYBOARD SHORTCUTS
+   ═══════════════════════════════════════════════════════ */
+document.addEventListener('keydown', e => {
+  const inInput = document.activeElement === document.getElementById('inp');
+  const modKey = navigator.platform.includes('Mac') ? e.metaKey : e.ctrlKey;
+
+  // Escape: cancel running stream
+  if (e.key === 'Escape' && S.loading) { abortStream(); return; }
+
+  if (modKey && !e.shiftKey && !e.altKey) {
+    // Ctrl/Cmd+1-4: mode switching
+    const modeMap = {'1': 'chat', '2': 'draft', '3': 'review', '4': 'synthesize'};
+    if (modeMap[e.key]) { e.preventDefault(); setMode(modeMap[e.key]); document.getElementById('inp').focus(); return; }
+    // Ctrl/Cmd+D: toggle doc panel
+    if (e.key === 'd' || e.key === 'D') { e.preventDefault(); togDoc(); return; }
+  }
+
+  // / or Ctrl+L: focus input (when not already in input)
+  if (!inInput) {
+    if (e.key === '/' || (modKey && (e.key === 'l' || e.key === 'L'))) {
+      e.preventDefault(); document.getElementById('inp').focus(); return;
+    }
+  }
+});
+
 
 function toast(m) {
   const el = document.getElementById('toast');
