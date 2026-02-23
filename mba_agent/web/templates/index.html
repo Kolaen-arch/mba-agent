@@ -195,6 +195,195 @@ body {
   color: var(--text-secondary);
 }
 
+/* Sources drawer */
+.sources-drawer {
+  margin: 8px 16px 0;
+  border: 1px solid var(--border-light);
+  border-radius: var(--r-sm);
+  background: var(--bg-card);
+  overflow: hidden;
+  transition: var(--ease);
+}
+.sources-toggle {
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: var(--ease);
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+.sources-toggle:hover { color: var(--text); }
+.sources-toggle .src-arrow {
+  font-size: 9px;
+  transition: transform .2s;
+  color: var(--text-muted);
+}
+.sources-drawer.open .src-arrow { transform: rotate(90deg); }
+.sources-body {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height .25s ease;
+}
+.sources-drawer.open .sources-body { max-height: 400px; overflow-y: auto; }
+.sources-inner { padding: 0 10px 10px; }
+
+/* Upload zone */
+.src-upload-zone {
+  border: 1px dashed var(--border);
+  border-radius: var(--r-sm);
+  padding: 10px;
+  text-align: center;
+  cursor: pointer;
+  transition: var(--ease);
+  position: relative;
+  margin-bottom: 8px;
+}
+.src-upload-zone:hover,
+.src-upload-zone.dragover {
+  border-color: var(--accent);
+  background: rgba(139, 110, 78, .04);
+}
+.src-upload-zone.uploading {
+  pointer-events: none;
+  opacity: .6;
+}
+.src-upload-icon {
+  font-size: 16px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+.src-upload-text {
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.src-upload-text strong { color: var(--accent); font-weight: 500; }
+
+/* Label input */
+.src-label-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.src-label-input {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  color: var(--text);
+  background: var(--bg-paper);
+  transition: var(--ease);
+  outline: none;
+}
+.src-label-input:focus { border-color: var(--border-focus); }
+.src-label-input::placeholder { color: var(--text-muted); }
+
+/* Progress bar during upload */
+.src-progress {
+  height: 3px;
+  background: var(--border-light);
+  border-radius: 2px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  display: none;
+}
+.src-progress.active { display: block; }
+.src-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  width: 0%;
+  transition: width .3s;
+}
+
+/* Source list items */
+.src-list { display: flex; flex-direction: column; gap: 2px; }
+.src-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  transition: var(--ease);
+  font-size: 11px;
+}
+.src-item:hover { background: var(--bg-sidebar-hover); }
+.src-file-icon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  background: rgba(139, 110, 78, .08);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+}
+.src-file-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  font-size: 11px;
+}
+.src-label-chip {
+  flex-shrink: 0;
+  max-width: 72px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 500;
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.src-chunk-count {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+.src-del-btn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+  opacity: 0;
+  transition: var(--ease);
+  line-height: 1;
+}
+.src-item:hover .src-del-btn { opacity: 1; }
+.src-del-btn:hover { color: var(--red); }
+
+.src-empty {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 8px 0;
+  font-style: italic;
+}
+
 /* Session list */
 .session-list { flex: 1; overflow-y: auto; padding: 8px 10px; }
 
@@ -1023,6 +1212,29 @@ body {
 
   <button class="import-btn" onclick="importBib()">Import BibTeX / Zotero</button>
   <button class="import-btn" onclick="showScaffold()">New Paper Structure</button>
+
+  <!-- Sources drawer -->
+  <div class="sources-drawer" id="srcDrawer">
+    <button class="sources-toggle" onclick="togSrc()">
+      <span>Sources <span id="srcCount" style="font-weight:400;text-transform:none"></span></span>
+      <span class="src-arrow">&#9654;</span>
+    </button>
+    <div class="sources-body">
+      <div class="sources-inner">
+        <div class="src-upload-zone" id="srcDrop" onclick="document.getElementById('srcFiles').click()">
+          <div class="src-upload-icon">&#128206;</div>
+          <div class="src-upload-text"><strong>Upload files</strong><br>PDF, DOCX, XLSX, CSV, TXT, MD</div>
+          <input type="file" id="srcFiles" multiple accept=".pdf,.docx,.xlsx,.csv,.txt,.md" style="display:none" onchange="handleSrcUpload(this.files)">
+        </div>
+        <div class="src-label-row">
+          <input type="text" class="src-label-input" id="srcLabel" placeholder="Label — e.g. First semester, Method lit">
+        </div>
+        <div class="src-progress" id="srcProg"><div class="src-progress-fill" id="srcProgFill"></div></div>
+        <div class="src-list" id="srcList"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="session-list" id="sList"></div>
 
   <div class="sidebar-footer">
@@ -1244,6 +1456,102 @@ async function loadSt() {
     S.modelInfo = s.model_routing;
   } catch (e) {}
 }
+
+/* ═══════════════════════════════════════════════════════
+   SOURCES DRAWER
+   ═══════════════════════════════════════════════════════ */
+function togSrc() {
+  document.getElementById('srcDrawer').classList.toggle('open');
+  loadSrcList();
+}
+
+async function loadSrcList() {
+  try {
+    const sources = await api('/api/sources/detailed');
+    const el = document.getElementById('srcList');
+    const cnt = document.getElementById('srcCount');
+    cnt.textContent = sources.length ? `(${sources.length})` : '';
+    if (!sources.length) {
+      el.innerHTML = '<div class="src-empty">No sources ingested yet</div>';
+      return;
+    }
+    el.innerHTML = sources.map(s => {
+      const ext = s.file.split('.').pop().toUpperCase().slice(0,3);
+      const lbl = s.label ? `<span class="src-label-chip" title="${esc(s.label)}">${esc(s.label)}</span>` : '';
+      return `<div class="src-item">
+        <span class="src-file-icon">${ext}</span>
+        <span class="src-file-name" title="${esc(s.file)}">${esc(s.file)}</span>
+        ${lbl}
+        <span class="src-chunk-count">${s.chunks}</span>
+        <button class="src-del-btn" onclick="delSrc('${esc(s.file)}')" title="Remove">&times;</button>
+      </div>`;
+    }).join('');
+  } catch (e) {}
+}
+
+async function handleSrcUpload(files) {
+  if (!files.length) return;
+  const zone = document.getElementById('srcDrop');
+  const prog = document.getElementById('srcProg');
+  const fill = document.getElementById('srcProgFill');
+  const label = document.getElementById('srcLabel').value.trim();
+
+  zone.classList.add('uploading');
+  prog.classList.add('active');
+  fill.style.width = '30%';
+
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  if (label) fd.append('label', label);
+
+  try {
+    fill.style.width = '60%';
+    const res = await fetch('/api/ingest', { method: 'POST', body: fd });
+    const data = await res.json();
+    fill.style.width = '100%';
+
+    if (data.ok) {
+      document.getElementById('srcLabel').value = '';
+      document.getElementById('srcFiles').value = '';
+      setTimeout(() => {
+        prog.classList.remove('active');
+        fill.style.width = '0%';
+        zone.classList.remove('uploading');
+      }, 600);
+      await Promise.all([loadSrcList(), loadSt()]);
+    } else {
+      alert('Ingest error: ' + (data.error || 'Unknown'));
+      zone.classList.remove('uploading');
+      prog.classList.remove('active');
+    }
+  } catch (e) {
+    alert('Upload failed: ' + e.message);
+    zone.classList.remove('uploading');
+    prog.classList.remove('active');
+  }
+}
+
+async function delSrc(filename) {
+  if (!confirm('Remove "' + filename + '" from sources?')) return;
+  try {
+    await fetch('/api/sources/' + encodeURIComponent(filename), { method: 'DELETE' });
+    await Promise.all([loadSrcList(), loadSt()]);
+  } catch (e) {}
+}
+
+// Drag-and-drop on upload zone
+document.addEventListener('DOMContentLoaded', () => {
+  const zone = document.getElementById('srcDrop');
+  if (!zone) return;
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleSrcUpload(e.dataTransfer.files);
+  });
+});
+
 
 async function loadStruct() {
   try {

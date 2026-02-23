@@ -1,18 +1,26 @@
 """
 Gemini (Google) backend implementation.
 Uses the google-genai SDK for Gemini 3.x models with Google Search grounding.
+Automatic fallback: if primary model returns 503, retries with fallback model.
 """
 
+import logging
 from typing import Generator
 
 from .llm_adapter import LLMBackend
 
+log = logging.getLogger(__name__)
+
 try:
     from google import genai
     from google.genai import types
+    from google.genai.errors import ServerError as GeminiServerError
     HAS_GEMINI = True
 except ImportError:
     HAS_GEMINI = False
+    GeminiServerError = Exception  # Placeholder so except clause doesn't break
+
+FALLBACK_MODEL = "gemini-3.0-pro"
 
 
 class GeminiBackend(LLMBackend):
@@ -23,14 +31,16 @@ class GeminiBackend(LLMBackend):
             raise ImportError("google-genai package not installed. Run: pip install google-genai")
         self.client = genai.Client(api_key=api_key)
         self.model = model
+        self.fallback_model = FALLBACK_MODEL if model != FALLBACK_MODEL else None
         self.search = search  # Enable Google Search grounding by default
         self.cache_name = None  # Set after context upload
 
     def _build_config(
         self, system: str, thinking_budget: int, max_output_tokens: int,
-        search: bool | None = None,
+        search: bool | None = None, model_override: str | None = None,
     ) -> "types.GenerateContentConfig":
         """Build GenerateContentConfig with optional thinking and search."""
+        active_model = model_override or self.model
         config_kwargs = {
             "system_instruction": system,
             "max_output_tokens": max_output_tokens,
@@ -38,7 +48,7 @@ class GeminiBackend(LLMBackend):
 
         if thinking_budget > 0:
             # Gemini 3.x uses thinking_level (str), Gemini 2.5 uses thinking_budget (int)
-            if "gemini-3" in self.model:
+            if "gemini-3" in active_model:
                 # Map budget to level: high (default), medium, low
                 if thinking_budget >= 8000:
                     level = "high"
@@ -52,7 +62,7 @@ class GeminiBackend(LLMBackend):
                     thinking_budget=thinking_budget,
                     include_thoughts=True,
                 )
-        elif "gemini-3" in self.model:
+        elif "gemini-3" in active_model:
             # Gemini 3.x: always enable thinking at high by default
             config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="high")
 
@@ -122,14 +132,22 @@ class GeminiBackend(LLMBackend):
         max_output_tokens: int = 16000,
         history: list[dict] | None = None,
     ) -> str:
-        config = self._build_config(system, thinking_budget, max_output_tokens)
         contents = self._build_contents(user_message, history)
 
-        kwargs = {"model": self.model, "contents": contents, "config": config}
-        if self.cache_name:
-            kwargs["cached_content"] = self.cache_name
-
-        response = self.client.models.generate_content(**kwargs)
+        # Try primary model, fallback on 503
+        for model in self._model_chain():
+            config = self._build_config(system, thinking_budget, max_output_tokens, model_override=model)
+            kwargs = {"model": model, "contents": contents, "config": config}
+            if self.cache_name:
+                kwargs["cached_content"] = self.cache_name
+            try:
+                response = self.client.models.generate_content(**kwargs)
+                break
+            except GeminiServerError as e:
+                if self.fallback_model and model != self.fallback_model:
+                    log.warning("Gemini 503 on %s, falling back to %s", model, self.fallback_model)
+                    continue
+                raise
 
         # Extract text (skip thought parts)
         text = ""
@@ -148,6 +166,12 @@ class GeminiBackend(LLMBackend):
 
         return text
 
+    def _model_chain(self) -> list[str]:
+        """Return [primary, fallback] model list for retry logic."""
+        if self.fallback_model:
+            return [self.model, self.fallback_model]
+        return [self.model]
+
     def stream(
         self,
         system: str,
@@ -157,14 +181,31 @@ class GeminiBackend(LLMBackend):
         max_output_tokens: int = 16000,
         history: list[dict] | None = None,
     ) -> Generator[dict, None, None]:
-        config = self._build_config(system, thinking_budget, max_output_tokens)
         contents = self._build_contents(user_message, history)
 
-        kwargs = {"model": self.model, "contents": contents, "config": config}
-        if self.cache_name:
-            kwargs["cached_content"] = self.cache_name
+        # Try primary model, fallback on 503
+        active_model = self.model
+        response_stream = None
+        for model in self._model_chain():
+            config = self._build_config(system, thinking_budget, max_output_tokens, model_override=model)
+            kwargs = {"model": model, "contents": contents, "config": config}
+            if self.cache_name:
+                kwargs["cached_content"] = self.cache_name
+            try:
+                response_stream = self.client.models.generate_content_stream(**kwargs)
+                # Peek at first chunk to detect 503 early (error happens on iteration)
+                first_chunk = next(iter(response_stream))
+                active_model = model
+                break
+            except (GeminiServerError, StopIteration) as e:
+                if isinstance(e, GeminiServerError) and self.fallback_model and model != self.fallback_model:
+                    log.warning("Gemini 503 on %s, falling back to %s", model, self.fallback_model)
+                    continue
+                raise
 
-        yield {"type": "model", "model": self.model, "thinking_enabled": thinking_budget > 0}
+        yield {"type": "model", "model": active_model, "thinking_enabled": thinking_budget > 0}
+        if active_model != self.model:
+            yield {"type": "text", "text": f"*[Using {active_model} — primary model temporarily unavailable]*\n\n"}
 
         full_text = ""
         in_thinking = False
@@ -172,10 +213,29 @@ class GeminiBackend(LLMBackend):
         last_response = None
 
         try:
-            response_stream = self.client.models.generate_content_stream(**kwargs)
+            # Process first_chunk that we already consumed
+            if first_chunk is not None:
+                last_response = first_chunk
+                usage = self._extract_usage(first_chunk) or usage
+                if first_chunk.candidates:
+                    for part in first_chunk.candidates[0].content.parts:
+                        part_text = part.text or ""
+                        is_thought = getattr(part, 'thought', False)
+                        if is_thought:
+                            if not in_thinking:
+                                in_thinking = True
+                                yield {"type": "thinking_start"}
+                            yield {"type": "thinking", "text": part_text}
+                        else:
+                            if in_thinking:
+                                in_thinking = False
+                                yield {"type": "thinking_done"}
+                            full_text += part_text
+                            yield {"type": "text", "text": part_text}
+
+            # Continue with remaining chunks
             for chunk in response_stream:
                 last_response = chunk
-                # Extract usage from each chunk (last one has final counts)
                 usage = self._extract_usage(chunk) or usage
 
                 if not chunk.candidates:
@@ -214,7 +274,7 @@ class GeminiBackend(LLMBackend):
         except GeneratorExit:
             return
 
-        yield {"type": "done", "full_text": full_text, "model": self.model, "usage": usage}
+        yield {"type": "done", "full_text": full_text, "model": active_model, "usage": usage}
 
     def get_model_name(self) -> str:
         return self.model

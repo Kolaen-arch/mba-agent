@@ -21,12 +21,14 @@ class Chunk:
     page_end: int
     chunk_index: int
     metadata: dict = field(default_factory=dict)
+    label: str = ""  # User-defined tag, e.g. "my paper, first semester"
 
     @property
     def source_tag(self) -> str:
+        prefix = f"[{self.label}] " if self.label else ""
         if self.page_start == self.page_end:
-            return f"[SOURCE: {self.source_file}, page {self.page_start}]"
-        return f"[SOURCE: {self.source_file}, pages {self.page_start}-{self.page_end}]"
+            return f"{prefix}[SOURCE: {self.source_file}, page {self.page_start}]"
+        return f"{prefix}[SOURCE: {self.source_file}, pages {self.page_start}-{self.page_end}]"
 
     def to_context_str(self) -> str:
         return f"{self.source_tag}\n{self.text}"
@@ -456,11 +458,62 @@ def extract_full_text(pdf_path: str, strip_references: bool = True) -> str:
     return "\n\n".join(text for _, text in pages)
 
 
+def ingest_files(
+    file_paths: list[str],
+    label: str = "",
+    chunk_size: int = 1500,
+    chunk_overlap: int = 200,
+    strip_references: bool = True,
+) -> tuple[list[Chunk], list[dict]]:
+    """Ingest specific files with an optional label tag."""
+    all_chunks = []
+    all_metadata = []
+    skipped = 0
+
+    for fp in file_paths:
+        file_path = Path(fp)
+        filename = file_path.name
+        ext = file_path.suffix.lower()
+
+        try:
+            if ext == ".pdf":
+                pages = extract_pdf_text(str(file_path), strip_references=strip_references)
+                if not pages:
+                    skipped += 1
+                    continue
+                meta = extract_pdf_metadata(str(file_path))
+                all_metadata.append(meta)
+                chunks = chunk_pages(pages, filename, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            elif ext == ".xlsx":
+                chunks = extract_xlsx_chunks(str(file_path))
+            elif ext == ".csv":
+                chunks = extract_csv_chunks(str(file_path))
+            elif ext == ".docx":
+                chunks = extract_docx_chunks(str(file_path), chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            elif ext in (".txt", ".md"):
+                chunks = extract_text_chunks(str(file_path), chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            else:
+                continue
+
+            # Apply label to all chunks
+            if label:
+                for c in chunks:
+                    c.label = label
+            all_chunks.extend(chunks)
+
+        except Exception as e:
+            print(f"  x Error processing {filename}: {e}")
+            skipped += 1
+
+    return all_chunks, all_metadata
+
+
 def ingest_directory(
     papers_dir: str,
     chunk_size: int = 1500,
     chunk_overlap: int = 200,
     strip_references: bool = True,
+    label: str = "",
 ) -> tuple[list[Chunk], list[dict]]:
     """Ingest all supported files from a directory (PDF, XLSX, CSV, DOCX, TXT, MD)."""
     papers_path = Path(papers_dir)
@@ -514,6 +567,9 @@ def ingest_directory(
             else:
                 continue
 
+            if label:
+                for c in chunks:
+                    c.label = label
             all_chunks.extend(chunks)
 
         except Exception as e:

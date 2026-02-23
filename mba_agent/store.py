@@ -34,7 +34,17 @@ class PaperStore:
         embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
     ):
         self.persist_dir = persist_dir
-        self.embedder = SentenceTransformer(embedding_model)
+        # Workaround: ROCm PyTorch on Windows lacks torch.distributed —
+        # SentenceTransformer's auto device detection crashes. Force device.
+        try:
+            import torch
+            if not hasattr(torch.distributed, 'is_initialized'):
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                self.embedder = SentenceTransformer(embedding_model, device=device)
+            else:
+                self.embedder = SentenceTransformer(embedding_model)
+        except Exception:
+            self.embedder = SentenceTransformer(embedding_model, device="cpu")
 
         self.client = chromadb.PersistentClient(
             path=persist_dir,
@@ -72,6 +82,7 @@ class PaperStore:
                     "page_end": c.page_end,
                     "chunk_index": c.chunk_index,
                     "source_tag": c.source_tag,
+                    "label": c.label or "",
                 }
                 for c in batch
             ]
@@ -264,6 +275,22 @@ class PaperStore:
                 sources.add(meta["source_file"])
         self._sources_cache = sorted(sources)
         return self._sources_cache
+
+    def list_sources_with_labels(self) -> list[dict]:
+        """List all unique source files with their labels and chunk counts."""
+        result = self.collection.get(include=["metadatas"])
+        source_info: dict[str, dict] = {}
+        if result["metadatas"]:
+            for meta in result["metadatas"]:
+                fname = meta["source_file"]
+                if fname not in source_info:
+                    source_info[fname] = {
+                        "file": fname,
+                        "label": meta.get("label", ""),
+                        "chunks": 0,
+                    }
+                source_info[fname]["chunks"] += 1
+        return sorted(source_info.values(), key=lambda x: x["file"])
 
     def clear(self) -> None:
         """Delete all data and recreate collection."""

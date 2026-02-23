@@ -80,7 +80,7 @@ def create_app() -> Flask:
     # Build backends dict
     backends = {}
     anthropic_key = cfg.get("anthropic_api_key", "")
-    if anthropic_key and not anthropic_key.startswith("sk-ant-your"):
+    if anthropic_key and len(anthropic_key) > 20 and "..." not in anthropic_key:
         backends["claude-opus-4-6"] = ClaudeBackend(anthropic_key, "claude-opus-4-6")
         backends["claude-sonnet-4-5-20250929"] = ClaudeBackend(anthropic_key, "claude-sonnet-4-5-20250929")
 
@@ -855,6 +855,68 @@ def create_app() -> Flask:
     @app.route("/api/sources", methods=["GET"])
     def api_sources():
         return jsonify(store.list_sources())
+
+    @app.route("/api/sources/detailed", methods=["GET"])
+    def api_sources_detailed():
+        """List all sources with labels and chunk counts."""
+        return jsonify(store.list_sources_with_labels())
+
+    @app.route("/api/ingest", methods=["POST"])
+    def api_ingest():
+        """Upload and ingest files with optional label."""
+        from ..ingest import ingest_files
+
+        label = request.form.get("label", "").strip()
+        files = request.files.getlist("files")
+
+        if not files:
+            return jsonify({"error": "No files uploaded"}), 400
+
+        papers_dir = Path(cfg.get("papers_dir", "./papers"))
+        papers_dir.mkdir(parents=True, exist_ok=True)
+
+        saved_paths = []
+        for f in files:
+            if not f.filename:
+                continue
+            # Sanitize filename
+            safe_name = Path(f.filename).name
+            dest = papers_dir / safe_name
+            f.save(str(dest))
+            saved_paths.append(str(dest))
+
+        if not saved_paths:
+            return jsonify({"error": "No valid files"}), 400
+
+        chunks, metadata = ingest_files(saved_paths, label=label)
+        if chunks:
+            store.add_chunks(chunks)
+
+        return jsonify({
+            "ok": True,
+            "files_ingested": len(saved_paths),
+            "chunks_created": len(chunks),
+            "label": label,
+        })
+
+    @app.route("/api/sources/<path:filename>", methods=["DELETE"])
+    def api_delete_source(filename):
+        """Delete all chunks for a specific source file."""
+        # Get all chunk IDs for this source
+        result = store.collection.get(
+            where={"source_file": filename},
+            include=["metadatas"],
+        )
+        if result["ids"]:
+            store.collection.delete(ids=result["ids"])
+            store._sources_cache = None
+            store._bm25_index = None
+        # Also delete the file from papers dir
+        papers_dir = Path(cfg.get("papers_dir", "./papers"))
+        file_path = papers_dir / filename
+        if file_path.exists() and file_path.resolve().is_relative_to(papers_dir.resolve()):
+            file_path.unlink()
+        return jsonify({"ok": True, "deleted_chunks": len(result["ids"])})
 
     # ── Paper Structure API ──
 
