@@ -21,18 +21,28 @@ from flask import Flask, Response, request, jsonify, render_template, send_file
 from ..agent import MBAAgent
 from ..store import PaperStore
 from ..citations import CitationManager
+from ..claude_backend import ClaudeBackend
+from ..context_builder import ContextBuilder
 from ..docx_handler import (
     read_docx, write_docx_from_markdown, apply_changes_to_docx,
     list_docx_files, read_docx_section, export_full_paper,
+    compute_inline_diff, replace_section,
 )
 from ..paper_structure import (
     load_structure, save_structure, get_section, get_adjacent_sections,
     build_transition_context, build_glossary_context, compute_progress,
     find_terminology_issues, generate_scaffold_yaml,
     _match_heading_to_section, build_all_adjacent_pairs,
+    validate_argument_chain, compute_word_budget, infer_section_type,
 )
+from ..latex_handler import export_to_latex
 from .. import database as db
 from .. import prompts
+
+try:
+    from ..gemini_backend import GeminiBackend, HAS_GEMINI
+except ImportError:
+    HAS_GEMINI = False
 
 
 def load_config() -> dict:
@@ -67,8 +77,21 @@ def create_app() -> Flask:
     model_map = cfg.get("model_routing", None)
     thinking_map = cfg.get("thinking_budget", None)
 
+    # Build backends dict
+    backends = {}
+    anthropic_key = cfg.get("anthropic_api_key", "")
+    if anthropic_key and not anthropic_key.startswith("sk-ant-your"):
+        backends["claude-opus-4-6"] = ClaudeBackend(anthropic_key, "claude-opus-4-6")
+        backends["claude-sonnet-4-5-20250929"] = ClaudeBackend(anthropic_key, "claude-sonnet-4-5-20250929")
+
+    gemini_key = cfg.get("gemini_api_key", "")
+    if gemini_key and HAS_GEMINI:
+        gemini_model = cfg.get("gemini_model", "gemini-3.1-pro-preview")
+        gemini_search = cfg.get("gemini_search", True)
+        backends[gemini_model] = GeminiBackend(gemini_key, gemini_model, search=gemini_search)
+
     agent = MBAAgent(
-        api_key=cfg.get("anthropic_api_key", ""),
+        backends=backends,
         default_model=cfg.get("model", "claude-opus-4-6"),
         model_map=model_map,
         thinking_map=thinking_map,
@@ -79,10 +102,13 @@ def create_app() -> Flask:
         storage_path=f"{cfg.get('output_dir', './output')}/citations.json"
     )
 
+    ctx_builder = ContextBuilder(store=store, citations=citations, cfg=cfg)
+
     app.config["MBA_CFG"] = cfg
     app.config["MBA_STORE"] = store
     app.config["MBA_AGENT"] = agent
     app.config["MBA_CITATIONS"] = citations
+    app.config["MBA_CTX_BUILDER"] = ctx_builder
 
     log = logging.getLogger("mba_agent")
 
@@ -91,17 +117,26 @@ def create_app() -> Flask:
         error_id = str(uuid.uuid4())[:8]
         log.error(f"Error [{error_id}]: {type(e).__name__}: {e}\n{traceback.format_exc()}")
 
-        import anthropic
-        if isinstance(e, anthropic.APITimeoutError):
-            return f"Request timed out. Please try again. (ref: {error_id})"
-        if isinstance(e, anthropic.APIConnectionError):
-            return f"Could not connect to Anthropic API. Check your network. (ref: {error_id})"
-        if isinstance(e, anthropic.AuthenticationError):
-            return f"Invalid API key. Check config.yaml. (ref: {error_id})"
-        if isinstance(e, anthropic.RateLimitError):
-            return f"Rate limited by Anthropic. Wait a moment and retry. (ref: {error_id})"
-        if isinstance(e, anthropic.APIStatusError):
-            return f"API error ({e.status_code}). (ref: {error_id})"
+        # Check Anthropic errors
+        try:
+            import anthropic
+            if isinstance(e, anthropic.APITimeoutError):
+                return f"Request timed out. Please try again. (ref: {error_id})"
+            if isinstance(e, anthropic.APIConnectionError):
+                return f"Could not connect to Anthropic API. Check your network. (ref: {error_id})"
+            if isinstance(e, anthropic.AuthenticationError):
+                return f"Invalid API key. Check config.yaml. (ref: {error_id})"
+            if isinstance(e, anthropic.RateLimitError):
+                return f"Rate limited by Anthropic. Wait a moment and retry. (ref: {error_id})"
+            if isinstance(e, anthropic.APIStatusError):
+                return f"API error ({e.status_code}). (ref: {error_id})"
+        except ImportError:
+            pass
+
+        # Check Gemini errors
+        err_name = type(e).__name__
+        if "google" in type(e).__module__.lower() if hasattr(type(e), '__module__') else False:
+            return f"Gemini API error: {err_name}. (ref: {error_id})"
 
         # Generic — don't expose internals
         return f"Something went wrong. (ref: {error_id})"
@@ -274,18 +309,33 @@ def create_app() -> Flask:
 
     def _build_context(message, mode, data):
         """Build all context layers for a request."""
-        search_query = message[:500]
-        rag_context = store.build_context(
-            search_query,
-            n_results=cfg.get("max_retrieval_chunks", 25),
-        )
+        # Determine context strategy based on model backend
+        model_override = data.get("model_override", "")
+        effective_model = model_override or agent.get_model(mode)
+        is_gemini = effective_model.startswith("gemini")
 
-        source_files = list(set(re.findall(r'\[SOURCE: (.+?),', rag_context)))
+        strategy = cfg.get("context_strategy", "auto")
+        use_full = (strategy == "full") or (strategy == "auto" and is_gemini)
+
+        ps = load_structure()
+        section_id = data.get("section_id", "")
+
+        # Get key_sources for source-biased retrieval
+        sec = get_section(ps, section_id) if section_id else None
+        key_sources = sec.key_sources if sec else []
+
+        if use_full:
+            rag_context, source_files = ctx_builder.build_full_context(
+                mode, section_id, ps,
+            )
+        else:
+            rag_context, source_files = ctx_builder.build_rag_context(
+                message, mode, section_id, ps,
+                key_sources=key_sources if key_sources else None,
+            )
 
         # Add structure context for certain modes
         extra = ""
-        section_id = data.get("section_id", "")
-        ps = load_structure()
 
         if section_id and ps.sections:
             extra = build_transition_context(ps, section_id)
@@ -399,6 +449,19 @@ def create_app() -> Flask:
                             )
                             cost_usd = cost_entry.get("estimated_usd", 0)
 
+                        # Phase 7: Auto-update key_sources for the section
+                        if section_id and source_files:
+                            try:
+                                ps_update = load_structure()
+                                sec_update = get_section(ps_update, section_id)
+                                if sec_update:
+                                    existing = set(sec_update.key_sources or [])
+                                    existing.update(source_files[:10])
+                                    sec_update.key_sources = sorted(existing)
+                                    save_structure(ps_update)
+                            except Exception:
+                                pass
+
                         yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'sources': source_files[:10], 'citations': found_cites[:20], 'cost_usd': cost_usd, 'usage': usage})}\n\n"
 
             except Exception as e:
@@ -487,11 +550,28 @@ def create_app() -> Flask:
         use_history = False
 
         if mode == "draft":
-            return prompts.DRAFT_SYSTEM, message, False
+            system = prompts.DRAFT_SYSTEM
+            # Phase 11: inject section-type prompt fragment
+            if section_id:
+                sec = get_section(ps, section_id)
+                if sec:
+                    sec_type = getattr(sec, 'section_type', '') or infer_section_type(sec.title)
+                    fragment = prompts.SECTION_FRAGMENTS.get(sec_type, "")
+                    if fragment:
+                        system = system + "\n" + fragment
+            return system, message, False
         elif mode == "synthesize":
             return prompts.SYNTHESIZE_SYSTEM, f"Synthesize the literature on: {message}", False
         elif mode == "review":
-            return prompts.REVIEW_SYSTEM, f"Review the following draft section:\n\n{message}", False
+            system = prompts.REVIEW_SYSTEM
+            if section_id:
+                sec = get_section(ps, section_id)
+                if sec:
+                    sec_type = getattr(sec, 'section_type', '') or infer_section_type(sec.title)
+                    fragment = prompts.SECTION_FRAGMENTS.get(sec_type, "")
+                    if fragment:
+                        system = system + "\n" + fragment
+            return system, f"Review the following draft section:\n\n{message}", False
         elif mode == "cite":
             return prompts.CITE_SYSTEM, f"Find and format citations for: {message}", False
         elif mode == "transition":
@@ -761,6 +841,9 @@ def create_app() -> Flask:
             "model": cfg.get("model", "claude-opus-4-6"),
             "model_routing": agent.model_map,
             "thinking_budget": agent.thinking_map,
+            "available_models": agent.available_models(),
+            "context_strategy": cfg.get("context_strategy", "auto"),
+            "gemini_enabled": bool(cfg.get("gemini_api_key", "")),
             "chunk_count": store.count,
             "source_count": len(sources),
             "sources": sources,
@@ -1179,5 +1262,295 @@ def create_app() -> Flask:
             for k, v in data["thinking_budget"].items():
                 agent.thinking_map[k] = int(v)
         return jsonify({"ok": True, "model_routing": agent.model_map, "thinking_budget": agent.thinking_map})
+
+    # ── Phase 6: Diff-Based Drafting ──
+
+    @app.route("/api/documents/preview-diff", methods=["POST"])
+    def api_preview_diff():
+        """Compare agent output against current section content in a docx."""
+        data = request.json or {}
+        section_id = data.get("section_id", "")
+        new_text = data.get("new_text", "")
+        docx_path = data.get("docx_path", "")
+
+        if not docx_path or not os.path.exists(docx_path):
+            return jsonify({"error": "No document found"}), 404
+
+        ps = load_structure()
+        sec = get_section(ps, section_id)
+        if not sec:
+            return jsonify({"error": "Section not found"}), 404
+
+        # Extract current section text from docx
+        doc_data = read_docx(docx_path)
+        current_text = ""
+        for doc_sec in doc_data["sections"]:
+            matched = _match_heading_to_section(doc_sec["heading"], ps)
+            if matched and matched.id == section_id:
+                current_text = "\n\n".join(doc_sec["paragraphs"])
+                break
+
+        diff_html = compute_inline_diff(current_text, new_text)
+
+        return jsonify({
+            "diff_html": diff_html,
+            "current_words": len(current_text.split()),
+            "new_words": len(new_text.split()),
+            "delta": len(new_text.split()) - len(current_text.split()),
+        })
+
+    @app.route("/api/documents/accept-draft", methods=["POST"])
+    def api_accept_draft():
+        """Accept a draft by replacing the section content in the docx."""
+        data = request.json or {}
+        section_id = data.get("section_id", "")
+        new_text = data.get("new_text", "")
+        docx_path = data.get("docx_path", "")
+
+        if not docx_path or not os.path.exists(docx_path):
+            return jsonify({"error": "No document found"}), 404
+
+        ps = load_structure()
+        sec = get_section(ps, section_id)
+        if not sec:
+            return jsonify({"error": "Section not found"}), 404
+
+        # Replace section in docx
+        result = replace_section(docx_path, sec.title, new_text, docx_path)
+
+        # Update paper structure: word count, starts_with, ends_with
+        words = new_text.split()
+        sec.word_count = len(words)
+        sec.starts_with = " ".join(words[:30]) if words else ""
+        sec.ends_with = " ".join(words[-30:]) if words else ""
+        if sec.status == "outline":
+            sec.status = "drafting"
+        save_structure(ps)
+
+        return jsonify({"ok": True, "result": result, "word_count": sec.word_count})
+
+    # ── Phase 7: Source Coverage ──
+
+    @app.route("/api/structure/source-coverage", methods=["GET"])
+    def api_source_coverage():
+        """Which sources are used in which sections."""
+        ps = load_structure()
+        all_sources = store.list_sources()
+        matrix = {}
+        for src in all_sources:
+            matrix[src] = []
+            for sec in ps.sections:
+                if src in (sec.key_sources or []):
+                    matrix[src].append(sec.id)
+
+        unused = [src for src, secs in matrix.items() if not secs]
+        sections_without = [s.id for s in ps.sections if not s.key_sources]
+
+        return jsonify({
+            "matrix": matrix,
+            "unused_sources": unused,
+            "sections_without_sources": sections_without,
+            "total_sources": len(all_sources),
+            "sources_in_use": len(all_sources) - len(unused),
+        })
+
+    # ── Phase 8: Citation Coverage ──
+
+    @app.route("/api/citations/coverage", methods=["GET"])
+    def api_citation_coverage():
+        """Cross-reference imported citations against paper sections."""
+        ps = load_structure()
+        return jsonify(citations.coverage_report(ps.sections))
+
+    # ── Phase 9: Argument Chain Validation ──
+
+    @app.route("/api/structure/argument-validation", methods=["GET"])
+    def api_argument_validation():
+        """Validate that each claim in the argument chain maps to a section."""
+        ps = load_structure()
+        if not ps.argument_chain:
+            return jsonify({"error": "No argument chain defined"}), 400
+
+        # Fast pass: keyword matching
+        results = validate_argument_chain(ps)
+
+        # For unsupported claims: ask LLM for a more precise check
+        for r in results:
+            if r["status"] == "unsupported":
+                section_summaries = "\n".join(
+                    f"- {s.id} {s.title}: {s.summary}" for s in ps.sections if s.summary
+                )
+                prompt = (
+                    f"CLAIM: {r['claim']}\n\n"
+                    f"PAPER SECTIONS:\n{section_summaries}\n\n"
+                    "Which section(s) address this claim? If none, say NONE. "
+                    "Reply with just the section IDs, comma-separated, or NONE."
+                )
+                try:
+                    answer = agent._call(
+                        system="You map argument claims to paper sections. Be precise.",
+                        user_message=prompt,
+                        mode="chat",
+                    )
+                    if "NONE" not in answer.upper():
+                        ids = [x.strip() for x in answer.split(",") if x.strip()]
+                        r["supported_by"] = ids
+                        r["status"] = "weak" if ids else "unsupported"
+                except Exception:
+                    pass
+
+        unsupported = [r for r in results if r["status"] == "unsupported"]
+
+        return jsonify({
+            "total_claims": len(results),
+            "supported": sum(1 for r in results if r["status"] == "supported"),
+            "weak": sum(1 for r in results if r["status"] == "weak"),
+            "unsupported": len(unsupported),
+            "results": results,
+        })
+
+    # ── Phase 10: Word Budget ──
+
+    @app.route("/api/structure/word-budget", methods=["GET"])
+    def api_word_budget():
+        """Detailed word budget analysis per section."""
+        ps = load_structure()
+        return jsonify(compute_word_budget(ps))
+
+    # ── Phase 12: Session Templates ──
+
+    SESSION_TEMPLATES = [
+        {
+            "id": "draft_section",
+            "label": "Draft section",
+            "mode": "draft",
+            "prompt_template": "Write section {section_id} ({section_title}). Follow the paper's red thread and maintain consistency with adjacent sections.",
+            "requires_section": True,
+        },
+        {
+            "id": "review_section",
+            "label": "Review section",
+            "mode": "review",
+            "prompt_template": "Review section {section_id} ({section_title}) for argument strength, source usage, and writing quality.",
+            "requires_section": True,
+        },
+        {
+            "id": "consistency_check",
+            "label": "Check consistency",
+            "mode": "consistency",
+            "prompt_template": "Check section {section_id} ({section_title}) for terminology consistency, citation format, and argument alignment.",
+            "requires_section": True,
+        },
+        {
+            "id": "transition_bridge",
+            "label": "Write transition",
+            "mode": "transition",
+            "prompt_template": "Analyze and write a transition paragraph bridging the end of {prev_section} into {section_title}.",
+            "requires_section": True,
+        },
+        {
+            "id": "synth_topic",
+            "label": "Synthesize topic",
+            "mode": "synthesize",
+            "prompt_template": "Synthesize the literature on: ",
+            "requires_section": False,
+        },
+        {
+            "id": "full_audit",
+            "label": "Full paper audit",
+            "mode": "structure",
+            "prompt_template": "Analyze the full paper structure. Identify gaps in the argument chain, missing sections, and word budget issues.",
+            "requires_section": False,
+        },
+    ]
+
+    @app.route("/api/templates", methods=["GET"])
+    def api_templates():
+        """List available session templates."""
+        return jsonify(SESSION_TEMPLATES)
+
+    @app.route("/api/templates/apply", methods=["POST"])
+    def api_apply_template():
+        """Apply a session template — returns mode, section, and pre-filled prompt."""
+        data = request.json or {}
+        template_id = data.get("template_id", "")
+        section_id = data.get("section_id", "")
+
+        tpl = next((t for t in SESSION_TEMPLATES if t["id"] == template_id), None)
+        if not tpl:
+            return jsonify({"error": "Template not found"}), 404
+
+        ps = load_structure()
+        sec = get_section(ps, section_id) if section_id else None
+        adj = get_adjacent_sections(ps, section_id) if section_id else {}
+
+        prompt = tpl["prompt_template"].format(
+            section_id=section_id,
+            section_title=sec.title if sec else "",
+            prev_section=f"{adj['prev'].id} {adj['prev'].title}" if adj.get("prev") else "(none)",
+        )
+
+        return jsonify({
+            "mode": tpl["mode"],
+            "section_id": section_id,
+            "prompt": prompt,
+        })
+
+    # ── Phase 13: LaTeX Export ──
+
+    @app.route("/api/documents/export-latex", methods=["POST"])
+    def api_export_latex():
+        """Export paper structure to a LaTeX .tex file with \\cite{} references."""
+        data = request.json or {}
+        title = data.get("title", "")
+        author = data.get("author", "")
+
+        ps = load_structure()
+        cfg = load_config()
+        output_dir = cfg.get("output_dir", "output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "paper.tex")
+
+        # Build section dicts for the handler
+        section_dicts = []
+        for sec in sorted(ps.sections, key=lambda s: s.order):
+            section_dicts.append({
+                "id": sec.id,
+                "title": sec.title,
+                "parent_id": sec.parent_id,
+                "content": sec.content or "",
+                "order": sec.order,
+            })
+
+        export_to_latex(section_dicts, citations, output_path, title=title, author=author)
+
+        # Also export BibTeX file alongside .tex
+        bib_path = os.path.join(output_dir, "references.bib")
+        bib_entries = []
+        for key, cit in citations.citations.items():
+            if cit.bib_key and cit.from_bibtex:
+                # Reconstruct a minimal BibTeX entry from available fields
+                entry = f"@article{{{cit.bib_key},\n"
+                if cit.authors:
+                    entry += f"  author = {{{' and '.join(cit.authors)}}},\n"
+                if cit.year:
+                    entry += f"  year = {{{cit.year}}},\n"
+                if cit.title:
+                    entry += f"  title = {{{{{cit.title}}}}},\n"
+                if cit.journal:
+                    entry += f"  journal = {{{cit.journal}}},\n"
+                if cit.doi:
+                    entry += f"  doi = {{{cit.doi}}},\n"
+                entry += "}"
+                bib_entries.append(entry)
+        if bib_entries:
+            Path(bib_path).write_text("\n\n".join(bib_entries), encoding="utf-8")
+
+        return jsonify({
+            "ok": True,
+            "tex_path": output_path,
+            "bib_path": bib_path if bib_entries else None,
+            "sections_exported": len(section_dicts),
+        })
 
     return app

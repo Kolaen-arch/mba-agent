@@ -450,6 +450,12 @@ def extract_text_chunks(
     return chunk_pages(pages, filename, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
 
+def extract_full_text(pdf_path: str, strip_references: bool = True) -> str:
+    """Extract cleaned text as a single string. For Gemini full-context path."""
+    pages = extract_pdf_text(pdf_path, strip_references=strip_references)
+    return "\n\n".join(text for _, text in pages)
+
+
 def ingest_directory(
     papers_dir: str,
     chunk_size: int = 1500,

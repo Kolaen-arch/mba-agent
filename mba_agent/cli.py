@@ -40,17 +40,40 @@ def get_store(cfg: dict):
 
 
 def get_agent(cfg: dict):
-    """Initialize the Claude agent."""
+    """Initialize the agent with available backends."""
     from .agent import MBAAgent
+    from .claude_backend import ClaudeBackend
+
+    backends = {}
+
+    # Claude backends
     api_key = cfg.get("anthropic_api_key", "")
-    if not api_key or api_key.startswith("sk-ant-your"):
-        console.print("[red]Error: Set your Anthropic API key in config.yaml[/red]")
+    if api_key and not api_key.startswith("sk-ant-your"):
+        backends["claude-opus-4-6"] = ClaudeBackend(api_key, "claude-opus-4-6")
+        backends["claude-sonnet-4-5-20250929"] = ClaudeBackend(api_key, "claude-sonnet-4-5-20250929")
+
+    # Gemini backend (optional)
+    gemini_key = cfg.get("gemini_api_key", "")
+    if gemini_key:
+        try:
+            from .gemini_backend import GeminiBackend, HAS_GEMINI
+            if HAS_GEMINI:
+                gemini_model = cfg.get("gemini_model", "gemini-3.1-pro-preview")
+                gemini_search = cfg.get("gemini_search", True)
+                backends[gemini_model] = GeminiBackend(gemini_key, gemini_model, search=gemini_search)
+        except ImportError:
+            pass
+
+    if not backends:
+        console.print("[red]Error: No LLM backends configured. Set anthropic_api_key or gemini_api_key in config.yaml[/red]")
         sys.exit(1)
+
     return MBAAgent(
-        api_key=api_key,
+        backends=backends,
         default_model=cfg.get("model", "claude-opus-4-6"),
         model_map=cfg.get("model_routing"),
         thinking_map=cfg.get("thinking_budget"),
+        max_output_tokens=cfg.get("max_output_tokens", 16000),
     )
 
 
@@ -106,6 +129,64 @@ def ingest(clear):
 
     console.print(f"\n[green]Done. {store.count} total chunks in store.[/green]")
     console.print(f"Sources: {len(metadata)} PDFs processed.")
+
+
+@cli.command()
+def extract():
+    """Extract and display cleaned text from all source files (Gemini full-context verification).
+
+    Shows total character count and estimated token count for Gemini context window planning.
+    """
+    cfg = load_config()
+    papers_dir = cfg.get("papers_dir", "./papers")
+    papers_path = Path(papers_dir)
+
+    console.print(f"\n[bold]Extracting text from {papers_dir}/[/bold]\n")
+
+    total_chars = 0
+    file_count = 0
+
+    for pdf in sorted(papers_path.glob("**/*.pdf")):
+        try:
+            from .ingest import extract_pdf_text
+            pages = extract_pdf_text(str(pdf), strip_references=True)
+            chars = sum(len(t) for _, t in pages)
+            total_chars += chars
+            file_count += 1
+            console.print(f"  [green]✓[/green] {pdf.name}: {len(pages)} pages, {chars:,} chars")
+        except Exception as e:
+            console.print(f"  [red]✗[/red] {pdf.name}: {e}")
+
+    for docx in sorted(papers_path.glob("**/*.docx")):
+        try:
+            from docx import Document
+            doc = Document(str(docx))
+            text = "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            total_chars += len(text)
+            file_count += 1
+            console.print(f"  [green]✓[/green] {docx.name}: {len(text):,} chars")
+        except Exception as e:
+            console.print(f"  [red]✗[/red] {docx.name}: {e}")
+
+    for ext in ("*.txt", "*.md"):
+        for txt in sorted(papers_path.glob(f"**/{ext}")):
+            try:
+                content = txt.read_text(encoding="utf-8", errors="replace")
+                total_chars += len(content)
+                file_count += 1
+                console.print(f"  [green]✓[/green] {txt.name}: {len(content):,} chars")
+            except Exception as e:
+                console.print(f"  [red]✗[/red] {txt.name}: {e}")
+
+    est_tokens = total_chars // 4
+    console.print(f"\n[bold]Total: {file_count} files, {total_chars:,} chars (~{est_tokens:,} tokens)[/bold]")
+
+    if est_tokens > 900_000:
+        console.print("[yellow]Warning: Exceeds Gemini's ~1M token context window. Some files may be truncated.[/yellow]")
+    elif est_tokens > 500_000:
+        console.print("[dim]Fits in Gemini 1M context with room for system prompt + output.[/dim]")
+    else:
+        console.print("[green]Fits comfortably in Gemini 1M context window.[/green]")
 
 
 @cli.command()

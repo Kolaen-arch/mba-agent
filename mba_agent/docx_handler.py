@@ -354,6 +354,78 @@ def export_full_paper(
     return output_path
 
 
+def compute_inline_diff(old_text: str, new_text: str) -> str:
+    """Produce HTML with <ins> and <del> tags for word-level inline diff."""
+    import difflib
+    old_words = old_text.split()
+    new_words = new_text.split()
+    matcher = difflib.SequenceMatcher(None, old_words, new_words)
+    parts = []
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op == 'equal':
+            parts.append(' '.join(old_words[i1:i2]))
+        elif op == 'replace':
+            parts.append(f'<del>{" ".join(old_words[i1:i2])}</del>')
+            parts.append(f'<ins>{" ".join(new_words[j1:j2])}</ins>')
+        elif op == 'insert':
+            parts.append(f'<ins>{" ".join(new_words[j1:j2])}</ins>')
+        elif op == 'delete':
+            parts.append(f'<del>{" ".join(old_words[i1:i2])}</del>')
+    return ' '.join(parts)
+
+
+def replace_section(source_path: str, heading: str, new_text: str, output_path: str) -> str:
+    """Replace the content of a section (identified by heading) in a .docx file."""
+    doc = Document(source_path)
+    in_section = False
+    section_level = 0
+    paragraphs_to_clear = []
+
+    for idx, para in enumerate(doc.paragraphs):
+        style_name = para.style.name if para.style else ""
+
+        if style_name.startswith("Heading"):
+            try:
+                level = int(style_name.replace("Heading ", "").replace("Heading", "1"))
+            except ValueError:
+                level = 1
+
+            if in_section:
+                # Hit next heading at same or higher level — stop
+                if level <= section_level:
+                    break
+            elif para.text.strip().lower() == heading.strip().lower():
+                in_section = True
+                section_level = level
+                continue
+        elif in_section:
+            paragraphs_to_clear.append(idx)
+
+    if not paragraphs_to_clear:
+        # Section not found or empty — append after heading
+        doc.save(output_path)
+        return "Section not found or empty — no changes made."
+
+    # Clear old content
+    for idx in paragraphs_to_clear:
+        para = doc.paragraphs[idx]
+        for run in para.runs:
+            run.text = ""
+        para.text = ""
+
+    # Write new content into first cleared paragraph, rest as new paragraphs
+    new_lines = [l for l in new_text.split("\n") if l.strip()]
+    if new_lines and paragraphs_to_clear:
+        first_para = doc.paragraphs[paragraphs_to_clear[0]]
+        _add_formatted_runs(first_para, new_lines[0])
+        for line in new_lines[1:]:
+            new_para = doc.add_paragraph()
+            _add_formatted_runs(new_para, line)
+
+    doc.save(output_path)
+    return f"Replaced section '{heading}' with {len(new_lines)} paragraphs."
+
+
 def list_docx_files(directory: str) -> list[dict]:
     """List all .docx files in a directory with basic info."""
     path = Path(directory)

@@ -1,14 +1,12 @@
 """
-Agent: Claude API interaction layer.
-Supports streaming, extended thinking, model routing per task,
-and token budget management.
+Agent: LLM interaction orchestrator.
+Delegates to backend adapters (Claude, Gemini).
+Handles model routing, context assembly, conversation history.
 """
 
-import json
 from typing import Generator
 
-import anthropic
-
+from .llm_adapter import LLMBackend
 from . import prompts
 
 
@@ -67,24 +65,33 @@ MAX_CONTEXT_TOKENS = {
 
 
 class MBAAgent:
-    """Manages interactions with Claude for the MBA paper."""
+    """Manages LLM interactions for the MBA paper. Backend-agnostic."""
 
     def __init__(
         self,
-        api_key: str,
+        backends: dict[str, LLMBackend],
         default_model: str = "claude-opus-4-6",
         model_map: dict | None = None,
         thinking_map: dict | None = None,
         max_output_tokens: int = 16000,
-        enable_prompt_cache: bool = True,
     ):
-        self.client = anthropic.Anthropic(api_key=api_key, timeout=120.0)
+        self.backends = backends
         self.default_model = default_model
         self.model_map = model_map or DEFAULT_MODEL_MAP
         self.thinking_map = thinking_map or DEFAULT_THINKING_MAP
         self.max_output_tokens = max_output_tokens
-        self.enable_prompt_cache = enable_prompt_cache
         self.conversation_history: list[dict] = []
+
+    def _get_backend(self, model: str) -> LLMBackend:
+        """Find the backend that handles this model."""
+        if model in self.backends:
+            return self.backends[model]
+        # Fallback: match by provider prefix
+        for key, backend in self.backends.items():
+            if model.startswith(key.split("-")[0]):
+                return backend
+        # Last resort: default model's backend
+        return self.backends.get(self.default_model, next(iter(self.backends.values())))
 
     def get_model(self, mode: str) -> str:
         return self.model_map.get(mode, self.default_model)
@@ -92,17 +99,9 @@ class MBAAgent:
     def get_thinking_budget(self, mode: str) -> int:
         return self.thinking_map.get(mode, 0)
 
-    def _build_system_with_cache(self, system: str) -> list[dict] | str:
-        """Wrap system prompt in cache_control block for prompt caching."""
-        if not self.enable_prompt_cache:
-            return system
-        return [
-            {
-                "type": "text",
-                "text": system,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
+    def available_models(self) -> list[str]:
+        """Return list of available model names."""
+        return list(self.backends.keys())
 
     def _build_message(self, user_message: str, context: str, max_context_tokens: int = 80000) -> str:
         """
@@ -126,16 +125,12 @@ class MBAAgent:
         Priority-based truncation. Structure/citation context preserved,
         RAG chunks trimmed from the bottom (lowest relevance).
         """
-        # Split context at the --- separator between structure/citations and RAG chunks
         parts = context.split("\n\n---\n\n", 1)
 
         if len(parts) == 2:
-            # parts[0] = structure + citations (never trim)
-            # parts[1] = RAG chunks (trim from bottom)
             priority_ctx = parts[0]
             rag_ctx = parts[1]
         else:
-            # No separator — treat entire context as RAG chunks
             priority_ctx = ""
             rag_ctx = context
 
@@ -143,11 +138,9 @@ class MBAAgent:
         remaining = max_tokens - priority_tokens
 
         if remaining <= 0:
-            # Even priority context exceeds budget — truncate it at sentence boundary
             char_limit = max_tokens * 3
             return priority_ctx[:char_limit] + "\n\n[... context truncated ...]"
 
-        # Trim RAG chunks from the bottom (they're sorted by relevance, best first)
         rag_chunks = rag_ctx.split("\n\n")
         kept = []
         used = 0
@@ -178,7 +171,7 @@ class MBAAgent:
     ) -> str:
         """
         Non-streaming API call. Returns complete text.
-        model_override/thinking_override take precedence over mode defaults.
+        Delegates to the appropriate backend based on model selection.
         """
         model = model_override or self.get_model(mode)
         thinking_budget = thinking_override if thinking_override is not None else self.get_thinking_budget(mode)
@@ -186,48 +179,31 @@ class MBAAgent:
 
         full_message = self._build_message(user_message, context, max_ctx)
 
+        history = None
         if use_history:
-            messages = self.conversation_history + [
-                {"role": "user", "content": full_message}
-            ]
-        else:
-            messages = [{"role": "user", "content": full_message}]
+            history = list(self.conversation_history)
 
-        kwargs = {
-            "model": model,
-            "max_tokens": self.max_output_tokens,
-            "system": self._build_system_with_cache(system),
-            "messages": messages,
-        }
-
-        # Add extended thinking if budget > 0
-        if thinking_budget > 0:
-            kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": thinking_budget,
-            }
-            # Extended thinking requires higher max_tokens
-            kwargs["max_tokens"] = self.max_output_tokens + thinking_budget
-
-        response = self.client.messages.create(**kwargs)
-
-        # Extract text from response (may contain thinking blocks)
-        assistant_text = ""
-        for block in response.content:
-            if block.type == "text":
-                assistant_text += block.text
+        backend = self._get_backend(model)
+        result = backend.call(
+            system=system,
+            user_message=full_message,
+            mode=mode,
+            thinking_budget=thinking_budget,
+            max_output_tokens=self.max_output_tokens,
+            history=history,
+        )
 
         if use_history:
             self.conversation_history.append(
                 {"role": "user", "content": full_message}
             )
             self.conversation_history.append(
-                {"role": "assistant", "content": assistant_text}
+                {"role": "assistant", "content": result}
             )
             if len(self.conversation_history) > 40:
                 self.conversation_history = self.conversation_history[-40:]
 
-        return assistant_text
+        return result
 
     def _stream(
         self,
@@ -240,12 +216,8 @@ class MBAAgent:
         thinking_override: int | None = None,
     ) -> Generator[dict, None, None]:
         """
-        Streaming API call. Yields dicts:
-        {"type": "thinking", "text": "..."} for thinking tokens
-        {"type": "text", "text": "..."} for output tokens
-        {"type": "done", "full_text": "..."} when complete
-        {"type": "model", "model": "..."} at start
-        model_override/thinking_override take precedence over mode defaults.
+        Streaming API call. Delegates to the appropriate backend.
+        Yields dicts with standard event types.
         """
         model = model_override or self.get_model(mode)
         thinking_budget = thinking_override if thinking_override is not None else self.get_thinking_budget(mode)
@@ -253,71 +225,24 @@ class MBAAgent:
 
         full_message = self._build_message(user_message, context, max_ctx)
 
+        history = None
         if use_history:
-            messages = self.conversation_history + [
-                {"role": "user", "content": full_message}
-            ]
-        else:
-            messages = [{"role": "user", "content": full_message}]
+            history = list(self.conversation_history)
 
-        kwargs = {
-            "model": model,
-            "max_tokens": self.max_output_tokens,
-            "system": self._build_system_with_cache(system),
-            "messages": messages,
-        }
-
-        if thinking_budget > 0:
-            kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": thinking_budget,
-            }
-            kwargs["max_tokens"] = self.max_output_tokens + thinking_budget
-
-        yield {"type": "model", "model": model, "thinking_enabled": thinking_budget > 0}
-
+        backend = self._get_backend(model)
         full_text = ""
-        is_thinking = False
-        usage = {}
 
-        try:
-            with self.client.messages.stream(**kwargs) as stream:
-                for event in stream:
-                    if hasattr(event, 'type'):
-                        if event.type == 'content_block_start':
-                            if hasattr(event, 'content_block'):
-                                if event.content_block.type == 'thinking':
-                                    is_thinking = True
-                                    yield {"type": "thinking_start"}
-                                elif event.content_block.type == 'text':
-                                    is_thinking = False
-                        elif event.type == 'content_block_delta':
-                            if hasattr(event, 'delta'):
-                                if hasattr(event.delta, 'thinking'):
-                                    yield {"type": "thinking", "text": event.delta.thinking}
-                                elif hasattr(event.delta, 'text'):
-                                    full_text += event.delta.text
-                                    yield {"type": "text", "text": event.delta.text}
-                        elif event.type == 'content_block_stop':
-                            if is_thinking:
-                                yield {"type": "thinking_done"}
-                                is_thinking = False
-
-                # Extract usage from final message
-                try:
-                    final = stream.get_final_message()
-                    if final and hasattr(final, 'usage'):
-                        u = final.usage
-                        usage = {
-                            "input_tokens": getattr(u, 'input_tokens', 0),
-                            "output_tokens": getattr(u, 'output_tokens', 0),
-                            "cache_read_input_tokens": getattr(u, 'cache_read_input_tokens', 0),
-                            "cache_creation_input_tokens": getattr(u, 'cache_creation_input_tokens', 0),
-                        }
-                except Exception:
-                    pass
-        except GeneratorExit:
-            return  # Client disconnected, clean exit
+        for chunk in backend.stream(
+            system=system,
+            user_message=full_message,
+            mode=mode,
+            thinking_budget=thinking_budget,
+            max_output_tokens=self.max_output_tokens,
+            history=history,
+        ):
+            if chunk["type"] == "done":
+                full_text = chunk.get("full_text", "")
+            yield chunk
 
         if use_history:
             self.conversation_history.append(
@@ -328,8 +253,6 @@ class MBAAgent:
             )
             if len(self.conversation_history) > 40:
                 self.conversation_history = self.conversation_history[-40:]
-
-        yield {"type": "done", "full_text": full_text, "model": model, "usage": usage}
 
     # ── Public methods (non-streaming) ──
 

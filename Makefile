@@ -1,4 +1,4 @@
-.PHONY: help install ingest serve serve-dev chat status references scaffold import-bib
+.PHONY: help install ingest extract serve serve-dev chat status references scaffold import-bib
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -6,8 +6,11 @@ help: ## Show this help
 install: ## Install dependencies
 	pip install -r requirements.txt --break-system-packages
 
-ingest: ## Process PDFs into vector store
+ingest: ## Process PDFs into vector store (Claude/RAG path)
 	python -m mba_agent ingest
+
+extract: ## Extract cleaned text from PDFs (Gemini/full-context verification)
+	python -m mba_agent extract
 
 serve: ## Launch web UI with gunicorn (async, non-blocking)
 	gunicorn -k gevent -w 1 -b 0.0.0.0:5000 --timeout 300 "mba_agent.web.app:create_app()"

@@ -747,6 +747,7 @@ body {
 }
 .override-pill.active-opus { border-color: var(--accent); color: var(--accent); }
 .override-pill.active-sonnet { border-color: var(--blue); color: var(--blue); }
+.override-pill.active-gemini { border-color: var(--green); color: var(--green); }
 
 
 /* ═══════════════════════════════════════════════════════
@@ -843,6 +844,31 @@ body {
   text-align: center;
 }
 .doc-action-btn:hover { border-color: var(--border-focus); color: var(--text); }
+
+/* Phase 6: Diff highlighting */
+.doc-body ins { background: #d4edda; text-decoration: none; padding: 1px 2px; border-radius: 2px; }
+.doc-body del { background: #f8d7da; text-decoration: line-through; padding: 1px 2px; border-radius: 2px; color: var(--red); }
+.diff-actions { display: none; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border-light); }
+.diff-actions.is-visible { display: flex; }
+.diff-actions .doc-action-btn.accept { border-color: var(--green); color: var(--green); }
+.diff-actions .doc-action-btn.reject { border-color: var(--red); color: var(--red); }
+
+/* Phase 10: Budget modal */
+.budget-bar { height: 18px; border-radius: 3px; background: var(--border-light); margin: 4px 0; position: relative; overflow: hidden; }
+.budget-fill { height: 100%; border-radius: 3px; transition: width .3s ease; }
+.budget-fill.on-track { background: var(--green); }
+.budget-fill.under { background: var(--accent); }
+.budget-fill.over { background: var(--red); }
+.budget-fill.empty { background: var(--text-muted); }
+.budget-row { display: flex; align-items: center; gap: 10px; font-size: 12px; margin-bottom: 6px; }
+.budget-row .sec-label { width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.budget-row .sec-bar { flex: 1; }
+.budget-row .sec-stat { width: 80px; text-align: right; font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
+
+/* Phase 12: Template actions */
+.template-actions { display: none; gap: 4px; padding: 6px 12px; border-top: 1px solid var(--border-light); flex-wrap: wrap; }
+.template-actions.is-visible { display: flex; }
+.template-actions .quick-action { font-size: 11px; padding: 4px 10px; }
 
 
 /* ═══════════════════════════════════════════════════════
@@ -1018,7 +1044,7 @@ body {
       <button class="mode-pill" data-m="synthesize" onclick="setMode('synthesize')">Synth</button>
     </div>
     <div class="toolbar-spacer"></div>
-    <select class="section-select" id="secSel" onchange="S.secId=this.value" title="Working section">
+    <select class="section-select" id="secSel" onchange="S.secId=this.value;toggleTpl()" title="Working section">
       <option value="">&mdash; section &mdash;</option>
     </select>
     <button class="docs-toggle" id="dTog" onclick="togDoc()">Docs</button>
@@ -1063,6 +1089,7 @@ body {
             <button class="override-pill active" data-ov="model" data-v="" onclick="setOv('model',this)">Auto</button>
             <button class="override-pill" data-ov="model" data-v="claude-opus-4-6" onclick="setOv('model',this)">Opus</button>
             <button class="override-pill" data-ov="model" data-v="claude-sonnet-4-5-20250929" onclick="setOv('model',this)">Sonnet</button>
+            <button class="override-pill" data-ov="model" data-v="gemini-3.1-pro-preview" onclick="setOv('model',this)">Gemini</button>
           </div>
           <div class="override-group">
             <span class="override-label">Think</span>
@@ -1091,11 +1118,24 @@ body {
       <button class="sel-menu-btn" onclick="selAction('cite')">Find Citation</button>
     </div>
   </div>
+  <div class="diff-actions" id="diffActions">
+    <button class="doc-action-btn accept" onclick="acceptDiff()">Accept Draft</button>
+    <button class="doc-action-btn reject" onclick="rejectDiff()">Reject</button>
+  </div>
+  <div class="template-actions" id="tplActions">
+    <button class="quick-action" onclick="applyTpl('draft_section')">Draft</button>
+    <button class="quick-action" onclick="applyTpl('review_section')">Review</button>
+    <button class="quick-action" onclick="applyTpl('consistency_check')">Consistency</button>
+    <button class="quick-action" onclick="applyTpl('transition_bridge')">Transition</button>
+  </div>
   <div class="doc-actions">
     <button class="doc-action-btn" onclick="sendForReview()">Review</button>
     <button class="doc-action-btn" onclick="syncDoc()">Sync</button>
     <button class="doc-action-btn" onclick="runAutoSync()">Auto-sync</button>
     <button class="doc-action-btn" onclick="redThreadAudit()">Red Thread</button>
+    <button class="doc-action-btn" onclick="citationReport()">Citations</button>
+    <button class="doc-action-btn" onclick="showBudget()">Budget</button>
+    <button class="doc-action-btn" onclick="exportLatex()">LaTeX</button>
   </div>
 </aside>
 
@@ -1135,6 +1175,18 @@ body {
   </div>
 </div>
 
+<!-- ═══ Budget Modal ═══ -->
+<div class="modal-overlay" id="budgetModal">
+  <div class="modal-box" style="max-width:560px">
+    <h3>Word Budget</h3>
+    <div id="budgetSummary" style="font-size:13px;margin-bottom:12px;color:var(--text-secondary)"></div>
+    <div id="budgetBars"></div>
+    <div class="modal-actions">
+      <button class="modal-btn" onclick="document.getElementById('budgetModal').classList.remove('is-visible')">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast-container"><div class="toast" id="toast"></div></div>
 
 <script>
@@ -1162,6 +1214,7 @@ function setOv(group, btn) {
   btn.classList.add('active');
   if (group === 'model' && v.includes('opus')) btn.classList.add('active-opus');
   if (group === 'model' && v.includes('sonnet')) btn.classList.add('active-sonnet');
+  if (group === 'model' && v.includes('gemini')) btn.classList.add('active-gemini');
 }
 
 
@@ -1839,6 +1892,148 @@ function selAction(mode) {
   ag(inp);
   inp.focus();
   _selText = '';
+}
+
+
+/* ═══════════════════════════════════════════════════════
+   PHASE 6: DIFF PREVIEW / ACCEPT
+   ═══════════════════════════════════════════════════════ */
+let _pendingDraft = '';
+
+async function previewDiff(newText) {
+  if (!S.secId || !S.dPath) return;
+  _pendingDraft = newText;
+  try {
+    const d = await api('/api/documents/preview-diff', {
+      method: 'POST',
+      body: JSON.stringify({ section_id: S.secId, new_text: newText, docx_path: S.dPath })
+    });
+    if (d.error) return toast(d.error);
+    document.getElementById('dBd').innerHTML = d.diff_html;
+    document.getElementById('diffActions').classList.add('is-visible');
+    toast(`Diff: ${d.delta > 0 ? '+' : ''}${d.delta} words`);
+  } catch (e) { toast('Diff failed'); }
+}
+
+async function acceptDiff() {
+  if (!_pendingDraft || !S.secId || !S.dPath) return;
+  try {
+    const d = await api('/api/documents/accept-draft', {
+      method: 'POST',
+      body: JSON.stringify({ section_id: S.secId, new_text: _pendingDraft, docx_path: S.dPath })
+    });
+    if (d.error) return toast(d.error);
+    document.getElementById('diffActions').classList.remove('is-visible');
+    _pendingDraft = '';
+    toast(`Accepted: ${d.word_count} words`);
+    loadStruct();
+    // Reload doc content
+    if (S.dPath) openD(S.dPath);
+  } catch (e) { toast('Accept failed'); }
+}
+
+function rejectDiff() {
+  document.getElementById('diffActions').classList.remove('is-visible');
+  _pendingDraft = '';
+  // Restore original doc content
+  if (S.dData) document.getElementById('dBd').innerHTML = rmd(S.dData.full_text);
+  toast('Draft rejected');
+}
+
+
+/* ═══════════════════════════════════════════════════════
+   PHASE 8: CITATION COVERAGE REPORT
+   ═══════════════════════════════════════════════════════ */
+async function citationReport() {
+  try {
+    const d = await api('/api/citations/coverage');
+    if (d.error) return toast(d.error);
+    let msg = `**Citation Coverage Report**\n\n`;
+    msg += `- **Imported**: ${d.total_imported} | **Used**: ${d.total_used} | **Unused**: ${d.unused.length}\n\n`;
+    if (d.under_cited_sections?.length) {
+      msg += `**Under-cited sections** (< 3 citations):\n`;
+      d.under_cited_sections.forEach(s => msg += `- ${s.id} ${s.title}: ${s.citation_count} citations\n`);
+      msg += '\n';
+    }
+    if (d.over_relied_sources?.length) {
+      msg += `**Over-relied sources** (5+ sections):\n`;
+      d.over_relied_sources.forEach(s => msg += `- ${s.key}: used in ${s.used_in_count} sections\n`);
+      msg += '\n';
+    }
+    if (d.unused?.length) {
+      msg += `**Unused references**: ${d.unused.slice(0, 10).join(', ')}`;
+      if (d.unused.length > 10) msg += ` (+${d.unused.length - 10} more)`;
+    }
+    addMsg('agent', msg);
+  } catch (e) { toast('Citation report failed'); }
+}
+
+
+/* ═══════════════════════════════════════════════════════
+   PHASE 10: WORD BUDGET DASHBOARD
+   ═══════════════════════════════════════════════════════ */
+async function showBudget() {
+  try {
+    const d = await api('/api/structure/word-budget');
+    if (d.error) return toast(d.error);
+
+    document.getElementById('budgetSummary').innerHTML =
+      `<strong>${d.total_written.toLocaleString()}</strong> / ${d.total_target.toLocaleString()} words ` +
+      `(${d.total_pct}%) &mdash; ~${d.page_estimate} / ${d.target_pages} pages`;
+
+    let h = '';
+    (d.sections || []).forEach(s => {
+      const pct = Math.min(s.pct, 150);
+      h += `<div class="budget-row">
+        <span class="sec-label" title="${s.id} ${s.title}">${s.id} ${s.title}</span>
+        <span class="sec-bar"><div class="budget-bar"><div class="budget-fill ${s.status}" style="width:${pct * 100 / 150}%"></div></div></span>
+        <span class="sec-stat">${s.actual} / ${s.target}</span>
+      </div>`;
+    });
+    document.getElementById('budgetBars').innerHTML = h;
+    document.getElementById('budgetModal').classList.add('is-visible');
+  } catch (e) { toast('Budget load failed'); }
+}
+
+
+/* ═══════════════════════════════════════════════════════
+   PHASE 12: SESSION TEMPLATES
+   ═══════════════════════════════════════════════════════ */
+function toggleTpl() {
+  const el = document.getElementById('tplActions');
+  if (S.secId) el.classList.add('is-visible');
+  else el.classList.remove('is-visible');
+}
+
+async function applyTpl(tplId) {
+  try {
+    const d = await api('/api/templates/apply', {
+      method: 'POST',
+      body: JSON.stringify({ template_id: tplId, section_id: S.secId })
+    });
+    if (d.error) return toast(d.error);
+    setMode(d.mode);
+    const inp = document.getElementById('inp');
+    inp.value = d.prompt;
+    ag(inp);
+    inp.focus();
+  } catch (e) { toast('Template failed'); }
+}
+
+
+/* ═══════════════════════════════════════════════════════
+   PHASE 13: LATEX EXPORT
+   ═══════════════════════════════════════════════════════ */
+async function exportLatex() {
+  try {
+    const title = S.structure?.title || '';
+    const d = await api('/api/documents/export-latex', {
+      method: 'POST',
+      body: JSON.stringify({ title })
+    });
+    if (d.error) return toast(d.error);
+    toast(`LaTeX exported: ${d.sections_exported} sections → ${d.tex_path}`);
+  } catch (e) { toast('LaTeX export failed'); }
 }
 
 

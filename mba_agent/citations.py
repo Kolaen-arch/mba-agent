@@ -307,6 +307,43 @@ class CitationManager:
             return c.full_reference
         return None
 
+    def coverage_report(self, sections: list) -> dict:
+        """Cross-reference citations with sections for a coverage analysis."""
+        # Per-section citation count
+        section_citations = {}
+        for key, c in self.citations.items():
+            for sec_name in c.used_in:
+                section_citations.setdefault(sec_name, []).append(key)
+
+        # Unused citations (imported but never cited)
+        used_keys = set()
+        for c in self.citations.values():
+            if c.used_in:
+                used_keys.add(c.key)
+        unused = [k for k in self.citations if k not in used_keys and self.citations[k].from_bibtex]
+
+        # Under-cited sections (fewer than 3 citations)
+        under_cited = []
+        for sec in sections:
+            count = len(section_citations.get(sec.id, []))
+            if sec.status in ("drafting", "review", "done") and count < 3:
+                under_cited.append({"id": sec.id, "title": sec.title, "citation_count": count})
+
+        # Over-relied sources (cited in 5+ sections)
+        over_relied = []
+        for key, c in self.citations.items():
+            if len(c.used_in) >= 5:
+                over_relied.append({"key": key, "used_in_count": len(c.used_in)})
+
+        return {
+            "total_imported": sum(1 for c in self.citations.values() if c.from_bibtex),
+            "total_used": len(used_keys),
+            "unused": unused,
+            "under_cited_sections": under_cited,
+            "over_relied_sources": over_relied,
+            "section_citations": {k: len(v) for k, v in section_citations.items()},
+        }
+
     def build_context_for_agent(self) -> str:
         """
         Build citation context the agent can use when drafting.

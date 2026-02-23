@@ -1,9 +1,20 @@
-# ── API ──
+# ── API Keys ──
 anthropic_api_key: "sk-ant-..."
+gemini_api_key: ""  # Leave empty to disable Gemini
 
 # ── Default model (fallback if mode not in routing map) ──
 model: "claude-opus-4-6"
 max_output_tokens: 16000
+
+# ── Gemini model (when Gemini is selected via override pill) ──
+gemini_model: "gemini-3.1-pro-preview"
+gemini_search: true  # Enable Google Search grounding (Gemini can search the web)
+
+# ── Context strategy ──
+# "rag" = ChromaDB retrieval (required for Claude)
+# "full" = concatenated cleaned text (for Gemini's 1M context window)
+# "auto" = full for Gemini, rag for Claude
+context_strategy: "auto"
 
 # ── Model routing: which model to use per task mode ──
 # Opus for heavy reasoning, Sonnet for speed + cost savings

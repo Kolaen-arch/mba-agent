@@ -193,6 +193,59 @@ Output format:
 - Overall consistency score: [consistent / minor issues / needs work / inconsistent]
 """
 
+# Section-type fragments injected into DRAFT_SYSTEM/REVIEW_SYSTEM when a section is selected
+SECTION_FRAGMENTS = {
+    "introduction": """
+SECTION-SPECIFIC GUIDANCE: INTRODUCTION
+- Open with the practical problem, not theory
+- State the research question explicitly by paragraph 3
+- Preview the contribution (what the reader will learn)
+- End with a roadmap of the paper structure
+- Keep it tight: 2500-3500 words max
+- The reader should understand the "so what?" within the first page
+""",
+    "theory": """
+SECTION-SPECIFIC GUIDANCE: THEORETICAL FRAMEWORK
+- Organize by theme, not by author
+- Show tensions between frameworks, not just a parade of agreement
+- Define key constructs with precision (use the glossary)
+- End each subsection by connecting it to the research question
+- Build toward a synthesis or conceptual model, not just a literature dump
+""",
+    "methodology": """
+SECTION-SPECIFIC GUIDANCE: METHODOLOGY
+- Justify every design choice (why this method, not alternatives)
+- Be explicit about ontological/epistemological position
+- Describe data collection in enough detail to replicate
+- Address validity, reliability, and limitations upfront
+- For DSR: follow Peffers et al. (2007) or Hevner et al. (2004) structure
+""",
+    "findings": """
+SECTION-SPECIFIC GUIDANCE: FINDINGS / ANALYSIS
+- Present findings before interpreting them
+- Use evidence (quotes, data, artifacts) for every claim
+- Structure mirrors the research question or sub-questions
+- Flag unexpected findings explicitly
+- Keep theory out — save interpretation for Discussion
+""",
+    "discussion": """
+SECTION-SPECIFIC GUIDANCE: DISCUSSION
+- Connect every finding back to theory from Chapter 2
+- Address the research question directly
+- Discuss what contradicts existing literature (most interesting part)
+- Separate theoretical contributions from practical implications
+- Acknowledge limitations honestly, but don't undermine your work
+""",
+    "conclusion": """
+SECTION-SPECIFIC GUIDANCE: CONCLUSION
+- Revisit the research question and answer it directly
+- Summarize contributions in 2-3 sentences (not a rehash of findings)
+- Limitations: be specific, not boilerplate
+- Future research: suggest concrete next steps, not vague directions
+- End with a strong closing statement that echoes the red thread
+""",
+}
+
 OUTLINE_SYSTEM = BASE_SYSTEM + """
 TASK: PAPER STRUCTURE AND OUTLINE
 You are helping the student plan or restructure their paper.

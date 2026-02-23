@@ -304,6 +304,90 @@ def find_terminology_issues(ps: PaperStructure, text: str) -> list[dict]:
     return issues
 
 
+def validate_argument_chain(ps: PaperStructure) -> list[dict]:
+    """Check that each claim in the argument chain maps to a section via keyword overlap."""
+    stop_words = {"the", "a", "an", "is", "are", "of", "in", "to", "and", "that", "for",
+                  "it", "on", "with", "as", "by", "this", "from", "or", "be", "at", "not",
+                  "how", "what", "why", "can", "do", "does", "has", "have", "was", "were"}
+    results = []
+    for i, claim in enumerate(ps.argument_chain):
+        claim_words = set(claim.lower().split()) - stop_words
+        matching_sections = []
+        for sec in ps.sections:
+            if sec.summary:
+                summary_words = set(sec.summary.lower().split()) - stop_words
+                overlap = claim_words & summary_words
+                if len(overlap) >= 2:
+                    matching_sections.append(sec.id)
+        results.append({
+            "claim_index": i + 1,
+            "claim": claim,
+            "supported_by": matching_sections,
+            "status": "supported" if matching_sections else "unsupported",
+        })
+    return results
+
+
+def compute_word_budget(ps: PaperStructure) -> dict:
+    """Detailed word budget analysis per section."""
+    sections = sorted(ps.sections, key=lambda s: s.order)
+    total_target = sum(s.target_words for s in sections)
+    total_written = sum(s.word_count for s in sections)
+
+    budget_items = []
+    cumulative_target = 0
+    cumulative_actual = 0
+
+    for sec in sections:
+        cumulative_target += sec.target_words
+        cumulative_actual += sec.word_count
+        pct = round(sec.word_count / sec.target_words * 100) if sec.target_words > 0 else 0
+        budget_items.append({
+            "id": sec.id,
+            "title": sec.title,
+            "target": sec.target_words,
+            "actual": sec.word_count,
+            "pct": pct,
+            "status": "over" if pct > 120 else "on_track" if pct > 60 else "under" if pct > 0 else "empty",
+            "cumulative_target": cumulative_target,
+            "cumulative_actual": cumulative_actual,
+        })
+
+    over_budget = [b for b in budget_items if b["status"] == "over"]
+    remaining_words = total_target - total_written
+    remaining_sections = [b for b in budget_items if b["status"] in ("under", "empty")]
+
+    return {
+        "total_target": total_target,
+        "total_written": total_written,
+        "total_pct": round(total_written / total_target * 100) if total_target > 0 else 0,
+        "remaining_words": remaining_words,
+        "page_estimate": total_written // 250,
+        "target_pages": total_target // 250,
+        "sections": budget_items,
+        "over_budget": over_budget,
+        "avg_words_per_remaining_section": round(remaining_words / len(remaining_sections)) if remaining_sections else 0,
+    }
+
+
+def infer_section_type(title: str) -> str:
+    """Guess section type from title for prompt fragment injection."""
+    title_lower = title.lower()
+    if any(w in title_lower for w in ["introduction", "indledning", "background", "baggrund"]):
+        return "introduction"
+    if any(w in title_lower for w in ["theory", "theoretical", "framework", "literature", "teori", "litteratur"]):
+        return "theory"
+    if any(w in title_lower for w in ["method", "metode", "design science", "research design", "forskningsdesign"]):
+        return "methodology"
+    if any(w in title_lower for w in ["finding", "result", "analysis", "artifact", "evaluation", "fund", "resultat", "analyse"]):
+        return "findings"
+    if any(w in title_lower for w in ["discussion", "diskussion", "implication", "contribution"]):
+        return "discussion"
+    if any(w in title_lower for w in ["conclusion", "konklusion"]):
+        return "conclusion"
+    return ""
+
+
 def generate_scaffold_yaml(
     title: str = "",
     rq: str = "",
