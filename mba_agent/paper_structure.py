@@ -222,6 +222,65 @@ def compute_progress(ps: PaperStructure) -> dict:
     }
 
 
+def _match_heading_to_section(heading: str, ps: PaperStructure) -> Optional[Section]:
+    """
+    Fuzzy-match a DOCX heading to a structure section.
+    Priority: exact title → section ID prefix → substring containment.
+    """
+    heading_clean = heading.strip().lower()
+    sorted_sections = sorted(ps.sections, key=lambda s: s.order)
+
+    # Pass 1: exact title match
+    for s in sorted_sections:
+        if s.title.strip().lower() == heading_clean:
+            return s
+
+    # Pass 2: heading starts with section ID (e.g. "2.1 Psychological Ownership")
+    for s in sorted_sections:
+        if heading_clean.startswith(s.id.lower()) and len(heading_clean) > len(s.id):
+            # Check that the rest roughly matches the title
+            rest = heading_clean[len(s.id):].strip().lstrip('.').strip()
+            if rest and s.title.strip().lower().startswith(rest[:10]):
+                return s
+            # Even if rest doesn't match title, ID prefix is strong enough
+            return s
+
+    # Pass 3: substring containment (heading contains title or vice versa)
+    for s in sorted_sections:
+        title_lower = s.title.strip().lower()
+        if len(title_lower) >= 4:
+            if title_lower in heading_clean or heading_clean in title_lower:
+                return s
+
+    return None
+
+
+def build_all_adjacent_pairs(ps: PaperStructure) -> list[dict]:
+    """
+    Build all adjacent section pairs with their content boundaries.
+    Returns list of dicts with prev/next section info for red thread audit.
+    """
+    sorted_sections = sorted(ps.sections, key=lambda s: s.order)
+    # Only include top-level or first-level subsections that have content
+    pairs = []
+    content_sections = [s for s in sorted_sections if s.ends_with or s.starts_with or s.summary]
+
+    for i in range(len(content_sections) - 1):
+        prev_sec = content_sections[i]
+        next_sec = content_sections[i + 1]
+        pairs.append({
+            "prev_id": prev_sec.id,
+            "prev_title": prev_sec.title,
+            "prev_ends_with": prev_sec.ends_with,
+            "prev_summary": prev_sec.summary,
+            "next_id": next_sec.id,
+            "next_title": next_sec.title,
+            "next_starts_with": next_sec.starts_with,
+            "next_summary": next_sec.summary,
+        })
+    return pairs
+
+
 def find_terminology_issues(ps: PaperStructure, text: str) -> list[dict]:
     """
     Scan text for terminology inconsistencies against the glossary.
@@ -249,75 +308,168 @@ def generate_scaffold_yaml(
     title: str = "",
     rq: str = "",
     methodology: str = "Design Science Research",
+    language: str = "en",
 ) -> str:
     """
     Generate a starter paper_structure.yaml for the user to fill in.
+    Supports Danish (da) and English (en) section names.
+    Methodology templates: DSR, Case Study, Survey, Mixed Methods.
     """
+    # Section templates by language
+    _SECTIONS = {
+        "en": {
+            "intro": "Introduction",
+            "background": "Background and Motivation",
+            "rq": "Research Question",
+            "structure": "Paper Structure",
+            "theory": "Theoretical Framework",
+            "lit_review": "Literature Review",
+            "methodology": "Methodology",
+            "research_design": "Research Design",
+            "data_collection": "Data Collection and Analysis",
+            "discussion": "Discussion",
+            "theoretical_contributions": "Theoretical Contributions",
+            "practical_implications": "Practical Implications",
+            "conclusion": "Conclusion",
+            # DSR-specific
+            "dsr_approach": "Design Science Research Approach",
+            "artifact_design": "Artifact Design and Development",
+            "evaluation": "Evaluation",
+            # Case Study-specific
+            "case_selection": "Case Selection and Context",
+            "within_case": "Within-Case Analysis",
+            "cross_case": "Cross-Case Analysis",
+            # Survey-specific
+            "instrument_design": "Instrument Design",
+            "sample_strategy": "Sampling Strategy",
+            "statistical_analysis": "Statistical Analysis",
+            # Mixed Methods-specific
+            "qual_strand": "Qualitative Strand",
+            "quant_strand": "Quantitative Strand",
+            "integration": "Integration of Findings",
+        },
+        "da": {
+            "intro": "Indledning",
+            "background": "Baggrund og Motivation",
+            "rq": "Forskningsspørgsmål",
+            "structure": "Afhandlingens Struktur",
+            "theory": "Teoretisk Grundlag",
+            "lit_review": "Litteraturgennemgang",
+            "methodology": "Metode",
+            "research_design": "Forskningsdesign",
+            "data_collection": "Dataindsamling og Analyse",
+            "discussion": "Diskussion",
+            "theoretical_contributions": "Teoretiske Bidrag",
+            "practical_implications": "Praktiske Implikationer",
+            "conclusion": "Konklusion",
+            "dsr_approach": "Design Science Research Tilgang",
+            "artifact_design": "Artefaktdesign og Udvikling",
+            "evaluation": "Evaluering",
+            "case_selection": "Caseudvælgelse og Kontekst",
+            "within_case": "Inden-for-case Analyse",
+            "cross_case": "Tværgående Caseanalyse",
+            "instrument_design": "Instrumentdesign",
+            "sample_strategy": "Stikprøvestrategi",
+            "statistical_analysis": "Statistisk Analyse",
+            "qual_strand": "Kvalitativt Spor",
+            "quant_strand": "Kvantitativt Spor",
+            "integration": "Integration af Fund",
+        },
+    }
+
+    lang = language if language in _SECTIONS else "en"
+    s = _SECTIONS[lang]
+    meth = methodology.lower()
+
+    # Build methodology-specific sections
+    order = 0
+
+    def sec(sid, title, parent="", target=0, **kwargs):
+        nonlocal order
+        order += 1
+        return Section(id=sid, title=title, parent_id=parent, order=order, target_words=target, **kwargs)
+
+    sections = [
+        sec("1", s["intro"], target=3000, notes="Problem statement, RQ, contribution overview"),
+        sec("1.1", s["background"], parent="1", target=1500),
+        sec("1.2", s["rq"], parent="1", target=500),
+        sec("1.3", s["structure"], parent="1", target=500),
+        sec("2", s["theory"], target=8000),
+    ]
+
+    # Theory subsections are generic — user fills in their own topics
+    sections.extend([
+        sec("2.1", s["lit_review"] + " I", parent="2", target=2000),
+        sec("2.2", s["lit_review"] + " II", parent="2", target=2000),
+        sec("2.3", s["lit_review"] + " III", parent="2", target=2000),
+    ])
+
+    sections.append(sec("3", s["methodology"], target=5000))
+
+    # Methodology-specific subsections
+    if "dsr" in meth or "design science" in meth:
+        sections.extend([
+            sec("3.1", s["dsr_approach"], parent="3", target=2000),
+            sec("3.2", s["research_design"], parent="3", target=1500),
+            sec("3.3", s["data_collection"], parent="3", target=1500),
+            sec("4", s["artifact_design"], target=5000),
+            sec("5", s["evaluation"], target=4000),
+        ])
+    elif "case" in meth:
+        sections.extend([
+            sec("3.1", s["case_selection"], parent="3", target=2000),
+            sec("3.2", s["research_design"], parent="3", target=1500),
+            sec("3.3", s["data_collection"], parent="3", target=1500),
+            sec("4", s["within_case"], target=4000),
+            sec("5", s["cross_case"], target=4000),
+        ])
+    elif "survey" in meth:
+        sections.extend([
+            sec("3.1", s["instrument_design"], parent="3", target=2000),
+            sec("3.2", s["sample_strategy"], parent="3", target=1500),
+            sec("3.3", s["statistical_analysis"], parent="3", target=1500),
+            sec("4", s["statistical_analysis"], target=5000),
+        ])
+    elif "mixed" in meth:
+        sections.extend([
+            sec("3.1", s["research_design"], parent="3", target=2000),
+            sec("3.2", s["data_collection"], parent="3", target=1500),
+            sec("4", s["qual_strand"], target=4000),
+            sec("5", s["quant_strand"], target=4000),
+            sec("5.1", s["integration"], parent="5", target=2000),
+        ])
+    else:
+        # Generic methodology structure
+        sections.extend([
+            sec("3.1", s["research_design"], parent="3", target=2000),
+            sec("3.2", s["data_collection"], parent="3", target=1500),
+            sec("4", s["lit_review"], target=5000),
+        ])
+
+    # Common ending sections
+    disc_id = str(order + 1)
+    sections.extend([
+        sec(disc_id, s["discussion"], target=4000),
+        sec(f"{disc_id}.1", s["theoretical_contributions"], parent=disc_id, target=2000),
+        sec(f"{disc_id}.2", s["practical_implications"], parent=disc_id, target=2000),
+        sec(str(order + 1), s["conclusion"], target=2000,
+            notes="Revisit RQ, summarize contributions, limitations, future research"),
+    ])
+
     template = PaperStructure(
-        title=title or "MBA Final Paper",
+        title=title or ("MBA Afsluttende Projekt" if lang == "da" else "MBA Final Paper"),
         research_question=rq,
         methodology=methodology,
-        red_thread="[Write your core argument in 2-3 sentences here]",
+        red_thread="[Skriv dit kerneargument i 2-3 sætninger her]" if lang == "da" else "[Write your core argument in 2-3 sentences here]",
         argument_chain=[
-            "[Claim 1: The problem statement — what gap exists]",
+            "[Claim 1: The problem statement]",
             "[Claim 2: Why existing theory doesn't address it]",
             "[Claim 3: Your proposed contribution]",
-            "[Claim 4: How DSR validates it]",
+            "[Claim 4: How the methodology validates it]",
             "[Claim 5: Implications for practice]",
         ],
-        sections=[
-            Section(id="1", title="Introduction", order=1, target_words=3000,
-                    summary="", notes="Problem statement, RQ, contribution overview"),
-            Section(id="1.1", title="Background and Motivation", parent_id="1", order=2, target_words=1500),
-            Section(id="1.2", title="Research Question", parent_id="1", order=3, target_words=500),
-            Section(id="1.3", title="Paper Structure", parent_id="1", order=4, target_words=500),
-            Section(id="2", title="Theoretical Framework", order=5, target_words=8000),
-            Section(id="2.1", title="Experience Economy", parent_id="2", order=6, target_words=2000,
-                    key_sources=["Pine & Gilmore, 1998", "Pine & Gilmore, 2011"]),
-            Section(id="2.2", title="Co-creation and Service-Dominant Logic", parent_id="2", order=7, target_words=2000,
-                    key_sources=["Vargo & Lusch, 2004", "Prahalad & Ramaswamy, 2004"]),
-            Section(id="2.3", title="Psychological Ownership", parent_id="2", order=8, target_words=2000,
-                    key_sources=["Pierce et al., 2001", "Pierce et al., 2003"]),
-            Section(id="2.4", title="Delegated Leadership", parent_id="2", order=9, target_words=2000),
-            Section(id="2.5", title="Theoretical Synthesis", parent_id="2", order=10, target_words=1500,
-                    notes="Where the four streams intersect — this is your contribution"),
-            Section(id="3", title="Methodology", order=11, target_words=5000),
-            Section(id="3.1", title="Design Science Research Approach", parent_id="3", order=12, target_words=2000),
-            Section(id="3.2", title="Research Design", parent_id="3", order=13, target_words=1500),
-            Section(id="3.3", title="Data Collection and Analysis", parent_id="3", order=14, target_words=1500),
-            Section(id="4", title="Artifact Design and Development", order=15, target_words=5000),
-            Section(id="5", title="Evaluation", order=16, target_words=4000),
-            Section(id="6", title="Discussion", order=17, target_words=4000),
-            Section(id="6.1", title="Theoretical Contributions", parent_id="6", order=18, target_words=2000),
-            Section(id="6.2", title="Practical Implications", parent_id="6", order=19, target_words=2000),
-            Section(id="7", title="Conclusion", order=20, target_words=2000,
-                    notes="Revisit RQ, summarize contributions, limitations, future research"),
-        ],
-        glossary=[
-            TermEntry(
-                preferred="psychological ownership",
-                alternatives=["psych ownership", "psychological sense of ownership", "PO"],
-                definition="The state in which individuals feel as though the target of ownership is theirs (Pierce et al., 2001)",
-                source="Pierce et al., 2001",
-            ),
-            TermEntry(
-                preferred="co-creation",
-                alternatives=["cocreation", "co creation", "value co-creation"],
-                definition="Joint creation of value by the firm and the customer (Prahalad & Ramaswamy, 2004)",
-                source="Prahalad & Ramaswamy, 2004",
-            ),
-            TermEntry(
-                preferred="delegated leadership",
-                alternatives=["distributed leadership", "shared leadership", "delegating leadership"],
-                definition="[Define based on your framework]",
-            ),
-            TermEntry(
-                preferred="experience economy",
-                alternatives=["experiential economy", "experience-based economy"],
-                definition="Economic offering based on staging memorable experiences (Pine & Gilmore, 1998)",
-                source="Pine & Gilmore, 1998",
-            ),
-        ],
+        sections=sections,
+        glossary=[],
     )
 
     return yaml.dump(
@@ -327,6 +479,7 @@ def generate_scaffold_yaml(
             "red_thread": template.red_thread,
             "methodology": template.methodology,
             "argument_chain": template.argument_chain,
+            "language": lang,
             "sections": [asdict(s) for s in template.sections],
             "glossary": [asdict(t) for t in template.glossary],
         },

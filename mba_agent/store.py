@@ -1,16 +1,28 @@
 """
-Vector store: ChromaDB wrapper with multilingual embeddings.
+Vector store: ChromaDB wrapper with multilingual embeddings + BM25 hybrid search.
 Handles storage, retrieval, and similarity search across the paper library.
 """
 
 import json
+import re
 from pathlib import Path
 
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
+try:
+    from rank_bm25 import BM25Okapi
+    HAS_BM25 = True
+except ImportError:
+    HAS_BM25 = False
+
 from .ingest import Chunk
+
+
+def _tokenize(text: str) -> list[str]:
+    """Simple whitespace + punctuation tokenizer for BM25."""
+    return re.findall(r'\w+', text.lower())
 
 
 class PaperStore:
@@ -33,6 +45,10 @@ class PaperStore:
             name="mba_papers",
             metadata={"hnsw:space": "cosine"},
         )
+
+        self._sources_cache: list[str] | None = None
+        self._bm25_index: "BM25Okapi | None" = None
+        self._bm25_corpus: list[dict] = []  # [{id, text, metadata}]
 
     @property
     def count(self) -> int:
@@ -68,6 +84,8 @@ class PaperStore:
                 metadatas=metadatas,
             )
             print(f"  Stored chunks {i+1}-{min(i+batch_size, len(chunks))} / {len(chunks)}")
+        self._sources_cache = None  # Invalidate cache after adding chunks
+        self._bm25_index = None  # Invalidate BM25 index
 
     def search(
         self,
@@ -115,12 +133,17 @@ class PaperStore:
         query: str,
         n_results: int = 25,
         max_chars: int = 480000,  # ~120K tokens
+        use_hybrid: bool = True,
     ) -> str:
         """
         Search and build a formatted context string for the LLM.
+        Uses hybrid search (semantic + BM25) when available.
         Deduplicates and sorts by relevance.
         """
-        results = self.search(query, n_results=n_results)
+        if use_hybrid and HAS_BM25:
+            results = self.search_hybrid(query, n_results=n_results)
+        else:
+            results = self.search(query, n_results=n_results)
 
         context_parts = []
         total_chars = 0
@@ -142,15 +165,105 @@ class PaperStore:
 
         return "\n\n---\n\n".join(context_parts)
 
+    def _build_bm25_index(self) -> None:
+        """Build BM25 index from all documents in ChromaDB."""
+        if not HAS_BM25:
+            return
+        result = self.collection.get(include=["documents", "metadatas"])
+        if not result["documents"]:
+            self._bm25_corpus = []
+            self._bm25_index = None
+            return
+
+        self._bm25_corpus = []
+        tokenized = []
+        for doc_id, text, meta in zip(result["ids"], result["documents"], result["metadatas"]):
+            self._bm25_corpus.append({"id": doc_id, "text": text, "metadata": meta})
+            tokenized.append(_tokenize(text))
+
+        self._bm25_index = BM25Okapi(tokenized)
+
+    def search_hybrid(
+        self,
+        query: str,
+        n_results: int = 25,
+        alpha: float = 0.7,
+    ) -> list[dict]:
+        """
+        Hybrid search: alpha * semantic_score + (1-alpha) * bm25_score.
+        Falls back to pure semantic search if BM25 is unavailable.
+        """
+        # Semantic search
+        semantic_results = self.search(query, n_results=min(n_results * 2, 50))
+
+        if not HAS_BM25 or alpha >= 1.0:
+            return semantic_results[:n_results]
+
+        # Build BM25 index if needed
+        if self._bm25_index is None:
+            self._build_bm25_index()
+
+        if not self._bm25_index or not self._bm25_corpus:
+            return semantic_results[:n_results]
+
+        # BM25 search
+        query_tokens = _tokenize(query)
+        bm25_scores = self._bm25_index.get_scores(query_tokens)
+
+        # Normalize BM25 scores to 0-1
+        max_bm25 = max(bm25_scores) if max(bm25_scores) > 0 else 1.0
+        bm25_map = {}
+        for i, entry in enumerate(self._bm25_corpus):
+            bm25_map[entry["id"]] = bm25_scores[i] / max_bm25
+
+        # Normalize semantic scores (distance → similarity, 0-1)
+        # ChromaDB cosine distance: 0 = identical, 2 = opposite
+        max_dist = max(r["distance"] for r in semantic_results) if semantic_results else 1.0
+        if max_dist == 0:
+            max_dist = 1.0
+
+        # Combine scores
+        combined = {}
+        for r in semantic_results:
+            doc_id = f"{r['source_file']}_{r.get('chunk_index', 0)}"
+            semantic_score = 1.0 - (r["distance"] / max_dist)
+            bm25_score = bm25_map.get(doc_id, 0.0)
+            combined[doc_id] = {
+                **r,
+                "score": alpha * semantic_score + (1 - alpha) * bm25_score,
+            }
+
+        # Also check top BM25 results that might not be in semantic results
+        top_bm25_indices = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)[:n_results]
+        for i in top_bm25_indices:
+            entry = self._bm25_corpus[i]
+            doc_id = entry["id"]
+            if doc_id not in combined:
+                combined[doc_id] = {
+                    "text": entry["text"],
+                    "source_file": entry["metadata"]["source_file"],
+                    "page_start": entry["metadata"].get("page_start", 0),
+                    "page_end": entry["metadata"].get("page_end", 0),
+                    "source_tag": entry["metadata"].get("source_tag", ""),
+                    "distance": 1.0,  # Unknown semantic distance
+                    "score": (1 - alpha) * (bm25_scores[i] / max_bm25),
+                }
+
+        # Sort by combined score, return top n
+        ranked = sorted(combined.values(), key=lambda x: x["score"], reverse=True)
+        return ranked[:n_results]
+
     def list_sources(self) -> list[str]:
-        """List all unique source files in the store."""
-        # Get all metadata
+        """List all unique source files in the store. Cached after first call."""
+        if self._sources_cache is not None:
+            return self._sources_cache
         result = self.collection.get(include=["metadatas"])
         sources = set()
         if result["metadatas"]:
             for meta in result["metadatas"]:
                 sources.add(meta["source_file"])
-        return sorted(sources)
+        self._sources_cache = sorted(sources)
+        return self._sources_cache
 
     def clear(self) -> None:
         """Delete all data and recreate collection."""
@@ -159,3 +272,6 @@ class PaperStore:
             name="mba_papers",
             metadata={"hnsw:space": "cosine"},
         )
+        self._sources_cache = None
+        self._bm25_index = None
+        self._bm25_corpus = []

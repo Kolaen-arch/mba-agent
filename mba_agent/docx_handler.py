@@ -270,6 +270,90 @@ def apply_changes_to_docx(
     return "\n".join(changes_made) if changes_made else "No changes applied."
 
 
+def export_full_paper(
+    sections: list[dict],
+    output_path: str,
+    title: str = "",
+    author: str = "",
+    include_toc: bool = True,
+) -> str:
+    """
+    Compile all paper sections into a single DOCX with APA 7th formatting.
+    sections: list of dicts with {id, title, parent_id, content, order}.
+    """
+    doc = Document()
+
+    # Set default font to Times New Roman 12pt
+    style = doc.styles["Normal"]
+    font = style.font
+    font.name = "Times New Roman"
+    font.size = Pt(12)
+
+    # Set paragraph spacing (double-spaced for APA 7th)
+    para_format = style.paragraph_format
+    para_format.line_spacing = 2.0
+    para_format.space_after = Pt(0)
+
+    # Set margins to 1 inch
+    for section in doc.sections:
+        section.top_margin = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin = Inches(1)
+        section.right_margin = Inches(1)
+
+    # Title page
+    if title:
+        doc.core_properties.title = title
+        title_para = doc.add_paragraph()
+        title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        title_para.space_before = Pt(120)
+        run = title_para.add_run(title)
+        run.bold = True
+        run.font.size = Pt(16)
+        run.font.name = "Times New Roman"
+
+        if author:
+            doc.core_properties.author = author
+            author_para = doc.add_paragraph()
+            author_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            author_run = author_para.add_run(author)
+            author_run.font.size = Pt(12)
+            author_run.font.name = "Times New Roman"
+
+        doc.add_page_break()
+
+    # TOC placeholder
+    if include_toc:
+        toc_heading = doc.add_heading("Table of Contents", level=1)
+        for sec in sorted(sections, key=lambda s: s.get("order", 0)):
+            indent = "  " * (1 if sec.get("parent_id") else 0)
+            doc.add_paragraph(f"{indent}{sec['id']} {sec['title']}")
+        doc.add_page_break()
+
+    # Sections
+    for sec in sorted(sections, key=lambda s: s.get("order", 0)):
+        # Determine heading level from parent_id
+        level = 2 if sec.get("parent_id") else 1
+        doc.add_heading(f"{sec['id']} {sec['title']}", level=level)
+
+        content = sec.get("content", "")
+        if content:
+            for line in content.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                para = doc.add_paragraph()
+                _add_formatted_runs(para, line)
+        else:
+            para = doc.add_paragraph()
+            run = para.add_run("[Section content not yet written]")
+            run.italic = True
+            run.font.color.rgb = RGBColor(150, 150, 150)
+
+    doc.save(output_path)
+    return output_path
+
+
 def list_docx_files(directory: str) -> list[dict]:
     """List all .docx files in a directory with basic info."""
     path = Path(directory)

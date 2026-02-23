@@ -867,6 +867,115 @@ body {
   white-space: nowrap;
 }
 .toast.is-visible { opacity: 1; transform: translateY(0); }
+
+
+/* ═══════════════════════════════════════════════════════
+   SELECTION MENU (doc panel)
+   ═══════════════════════════════════════════════════════ */
+.sel-menu {
+  position: absolute;
+  display: none;
+  background: var(--bg-dark);
+  border-radius: var(--r-pill);
+  padding: 4px;
+  gap: 2px;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0,0,0,.2);
+  white-space: nowrap;
+}
+.sel-menu.is-visible { display: flex; }
+.sel-menu-btn {
+  padding: 5px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-inverse);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: var(--r-pill);
+  transition: background .1s;
+}
+.sel-menu-btn:hover { background: rgba(255,255,255,.15); }
+
+
+/* ═══════════════════════════════════════════════════════
+   MODAL
+   ═══════════════════════════════════════════════════════ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.35);
+  z-index: 200;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.is-visible { display: flex; }
+.modal-box {
+  background: var(--bg-card);
+  border-radius: var(--r-lg);
+  padding: 28px;
+  width: 420px;
+  max-width: 90vw;
+  box-shadow: 0 8px 32px rgba(0,0,0,.15);
+}
+.modal-box h3 {
+  font-family: var(--font-serif);
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+.modal-field { margin-bottom: 14px; }
+.modal-field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.modal-field input,
+.modal-field select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  background: var(--bg);
+}
+.modal-field input:focus,
+.modal-field select:focus { outline: none; border-color: var(--border-focus); }
+.modal-lang-row { display: flex; gap: 12px; }
+.modal-lang-row label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 400;
+  color: var(--text);
+}
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+.modal-btn {
+  padding: 8px 18px;
+  border-radius: var(--r-sm);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  transition: var(--ease);
+}
+.modal-btn:hover { border-color: var(--border-focus); }
+.modal-btn.primary {
+  background: var(--text);
+  color: var(--text-inverse);
+  border-color: var(--text);
+}
+.modal-btn.primary:hover { background: var(--accent); border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -887,6 +996,7 @@ body {
   </div>
 
   <button class="import-btn" onclick="importBib()">Import BibTeX / Zotero</button>
+  <button class="import-btn" onclick="showScaffold()">New Paper Structure</button>
   <div class="session-list" id="sList"></div>
 
   <div class="sidebar-footer">
@@ -894,6 +1004,7 @@ body {
     <div class="stat-row"><span>Chunks</span><span id="sC">&mdash;</span></div>
     <div class="stat-row"><span>Citations</span><span id="sCi">&mdash;</span></div>
     <div class="stat-row"><span>Verified</span><span id="sCv">&mdash;</span></div>
+    <div class="stat-row"><span>Session cost</span><span id="sCost">&mdash;</span></div>
   </div>
 </aside>
 
@@ -972,15 +1083,57 @@ body {
     <button class="close-btn" onclick="togDoc()">&times;</button>
   </div>
   <div class="doc-file-list" id="dFL"></div>
-  <div class="doc-body" id="dBd">
+  <div class="doc-body" id="dBd" style="position:relative">
     <p style="color:var(--text-muted);text-align:center;margin-top:40px">Select a document above</p>
+    <div class="sel-menu" id="selMenu">
+      <button class="sel-menu-btn" onclick="selAction('review')">Review</button>
+      <button class="sel-menu-btn" onclick="selAction('draft')">Improve</button>
+      <button class="sel-menu-btn" onclick="selAction('cite')">Find Citation</button>
+    </div>
   </div>
   <div class="doc-actions">
-    <button class="doc-action-btn" onclick="sendForReview()">Review in chat</button>
-    <button class="doc-action-btn" onclick="syncDoc()">Sync to structure</button>
-    <button class="doc-action-btn" onclick="xDocx()">Export .docx</button>
+    <button class="doc-action-btn" onclick="sendForReview()">Review</button>
+    <button class="doc-action-btn" onclick="syncDoc()">Sync</button>
+    <button class="doc-action-btn" onclick="runAutoSync()">Auto-sync</button>
+    <button class="doc-action-btn" onclick="redThreadAudit()">Red Thread</button>
   </div>
 </aside>
+
+<!-- ═══ Scaffold Modal ═══ -->
+<div class="modal-overlay" id="scaffoldModal">
+  <div class="modal-box">
+    <h3>New Paper Structure</h3>
+    <div class="modal-field">
+      <label>Paper Title</label>
+      <input type="text" id="scTitle" placeholder="MBA Final Paper">
+    </div>
+    <div class="modal-field">
+      <label>Research Question</label>
+      <input type="text" id="scRQ" placeholder="How does X affect Y in the context of Z?">
+    </div>
+    <div class="modal-field">
+      <label>Methodology</label>
+      <select id="scMeth">
+        <option value="Design Science Research">Design Science Research</option>
+        <option value="Case Study">Case Study</option>
+        <option value="Survey">Survey</option>
+        <option value="Mixed Methods">Mixed Methods</option>
+        <option value="Generic">Generic</option>
+      </select>
+    </div>
+    <div class="modal-field">
+      <label>Language</label>
+      <div class="modal-lang-row">
+        <label><input type="radio" name="scLang" value="en" checked> English</label>
+        <label><input type="radio" name="scLang" value="da"> Dansk</label>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-btn" onclick="hideScaffold()">Cancel</button>
+      <button class="modal-btn primary" onclick="createScaffold()">Create</button>
+    </div>
+  </div>
+</div>
 
 <div class="toast-container"><div class="toast" id="toast"></div></div>
 
@@ -1133,6 +1286,12 @@ async function loadS(sid) {
   sb();
   renderSL();
   document.getElementById('inp').focus();
+  // Load session cost
+  try {
+    const cost = await api(`/api/sessions/${sid}/cost`);
+    if (cost.total_usd > 0) document.getElementById('sCost').textContent = '$' + cost.total_usd.toFixed(4);
+    else document.getElementById('sCost').textContent = '$0';
+  } catch (e) {}
 }
 
 async function delS(sid) {
@@ -1355,6 +1514,16 @@ async function send() {
             if (!S.ses && data.session_id) { S.ses = { id: data.session_id }; loadSes(); }
             finishStream(data.sources, model);
             if (data.citations?.length) toast(`${data.citations.length} citations tracked`);
+            if (data.cost_usd > 0) {
+              document.getElementById('sCost').textContent = '$' + data.cost_usd.toFixed(4);
+            }
+            if (data.usage?.input_tokens) {
+              const u = data.usage;
+              const cached = u.cache_read_input_tokens || 0;
+              const total_in = u.input_tokens || 0;
+              const pct = total_in > 0 ? Math.round(cached / total_in * 100) : 0;
+              toast(`$${(data.cost_usd || 0).toFixed(4)} | ${total_in + (u.output_tokens || 0)} tokens${pct > 0 ? ` (${pct}% cached)` : ''}`);
+            }
           }
           else if (evtType === 'error') { appendStreamText(`\n\n**Error:** ${data.error}`); }
           evtType = '';
@@ -1427,6 +1596,19 @@ async function openD(path) {
     );
     if (!S.dpOpen) togDoc();
     toast(`${d.metadata.word_count.toLocaleString()} words`);
+
+    // Auto-sync structure if paper structure exists
+    if (S.structure?.sections?.length) {
+      api('/api/structure/auto-sync', {
+        method: 'POST',
+        body: JSON.stringify({ docx_path: path, generate_summaries: false })
+      }).then(r => {
+        if (r.ok && r.sections_updated > 0) {
+          loadStruct();
+          toast(`Auto-synced ${r.sections_updated} sections`);
+        }
+      }).catch(() => {});
+    }
   } catch (e) { toast('Failed'); }
 }
 
@@ -1448,6 +1630,45 @@ async function syncDoc() {
     if (d.ok) { toast(`Synced: ${d.word_count} words`); loadStruct(); }
     else toast(d.error);
   } catch (e) { toast('Sync failed'); }
+}
+
+async function runAutoSync() {
+  if (!S.dPath) return toast('Open a document first');
+  toast('Auto-syncing structure...');
+  try {
+    const d = await api('/api/structure/auto-sync', {
+      method: 'POST',
+      body: JSON.stringify({ docx_path: S.dPath, generate_summaries: true })
+    });
+    if (d.error) return toast(d.error);
+    toast(`Synced ${d.sections_updated} sections, ${d.summaries_generated} summaries`);
+    if (d.unmatched?.length) toast(`Unmatched: ${d.unmatched.join(', ')}`);
+    loadStruct();
+  } catch (e) { toast('Auto-sync failed'); }
+}
+
+async function redThreadAudit() {
+  toast('Running Red Thread Audit...');
+  try {
+    const d = await api('/api/structure/red-thread-audit');
+    if (d.error) return toast(d.error);
+
+    // Format audit results as a chat message
+    let md = `## Red Thread Audit\n\n`;
+    md += `**Core argument:** ${d.red_thread}\n\n`;
+    md += `**Overall coherence:** ${d.average_coherence}/5.0 | **Weak transitions:** ${d.weak_transitions}/${d.total_pairs}\n\n`;
+
+    if (d.results?.length) {
+      md += `| From | To | Score | Thread | Suggestion |\n|---|---|---|---|---|\n`;
+      for (const r of d.results) {
+        const icon = r.red_thread === 'visible' ? 'OK' : r.red_thread === 'partial' ? '~' : '!!';
+        md += `| ${r.from_section} | ${r.to_section} | ${r.coherence}/5 | ${icon} ${r.red_thread} | ${r.suggestion || '-'} |\n`;
+      }
+    }
+
+    // Show as agent message
+    addMsg('assistant', md, [], true, 'sonnet-4.5');
+  } catch (e) { toast('Audit failed'); }
 }
 
 async function xDocx() {
@@ -1524,6 +1745,101 @@ document.addEventListener('keydown', e => {
     }
   }
 });
+
+
+/* ═══════════════════════════════════════════════════════
+   SCAFFOLD MODAL
+   ═══════════════════════════════════════════════════════ */
+function showScaffold() {
+  document.getElementById('scaffoldModal').classList.add('is-visible');
+}
+function hideScaffold() {
+  document.getElementById('scaffoldModal').classList.remove('is-visible');
+}
+async function createScaffold() {
+  const title = document.getElementById('scTitle').value.trim();
+  const rq = document.getElementById('scRQ').value.trim();
+  const meth = document.getElementById('scMeth').value;
+  const lang = document.querySelector('input[name="scLang"]:checked')?.value || 'en';
+
+  try {
+    const d = await api('/api/structure/scaffold', {
+      method: 'POST',
+      body: JSON.stringify({
+        title, research_question: rq, methodology: meth, language: lang, overwrite: false
+      })
+    });
+    if (d.error) {
+      if (d.exists) {
+        if (confirm('paper_structure.yaml already exists. Overwrite?')) {
+          const d2 = await api('/api/structure/scaffold', {
+            method: 'POST',
+            body: JSON.stringify({
+              title, research_question: rq, methodology: meth, language: lang, overwrite: true
+            })
+          });
+          if (d2.ok) { toast('Structure created'); hideScaffold(); loadStruct(); return; }
+        }
+        return;
+      }
+      return toast(d.error);
+    }
+    toast('Structure created');
+    hideScaffold();
+    loadStruct();
+  } catch (e) { toast('Failed to create structure'); }
+}
+
+
+/* ═══════════════════════════════════════════════════════
+   DOCUMENT TEXT SELECTION MENU
+   ═══════════════════════════════════════════════════════ */
+let _selText = '';
+document.getElementById('dBd').addEventListener('mouseup', e => {
+  const sel = window.getSelection();
+  const text = sel?.toString().trim();
+  const menu = document.getElementById('selMenu');
+
+  if (!text || text.length < 5) {
+    menu.classList.remove('is-visible');
+    _selText = '';
+    return;
+  }
+  _selText = text;
+
+  // Position at selection
+  const range = sel.getRangeAt(0);
+  const rect = range.getBoundingClientRect();
+  const parent = document.getElementById('dBd').getBoundingClientRect();
+
+  menu.style.left = Math.max(0, (rect.left + rect.right) / 2 - parent.left - 80) + 'px';
+  menu.style.top = (rect.top - parent.top - 40 + document.getElementById('dBd').scrollTop) + 'px';
+  menu.classList.add('is-visible');
+});
+
+document.addEventListener('mousedown', e => {
+  const menu = document.getElementById('selMenu');
+  if (!menu.contains(e.target)) menu.classList.remove('is-visible');
+});
+
+function selAction(mode) {
+  if (!_selText) return;
+  const menu = document.getElementById('selMenu');
+  menu.classList.remove('is-visible');
+
+  setMode(mode);
+  const inp = document.getElementById('inp');
+  const maxLen = 4000;
+  const text = _selText.length > maxLen ? _selText.slice(0, maxLen) + '...' : _selText;
+
+  if (mode === 'review') inp.value = `Review this passage:\n\n${text}`;
+  else if (mode === 'draft') inp.value = `Improve this passage. Maintain the academic tone and strengthen the argument:\n\n${text}`;
+  else if (mode === 'cite') inp.value = `Find relevant citations for the claims made in this passage:\n\n${text}`;
+
+  ag(inp);
+  inp.focus();
+  _selText = '';
+}
 
 
 function toast(m) {

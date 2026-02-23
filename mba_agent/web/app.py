@@ -4,10 +4,13 @@ Supports SSE streaming, BibTeX/Zotero import, model routing,
 document editing, paper structure management, and full history.
 """
 
+import difflib
 import json
+import logging
 import os
 import re
 import traceback
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -20,12 +23,13 @@ from ..store import PaperStore
 from ..citations import CitationManager
 from ..docx_handler import (
     read_docx, write_docx_from_markdown, apply_changes_to_docx,
-    list_docx_files, read_docx_section,
+    list_docx_files, read_docx_section, export_full_paper,
 )
 from ..paper_structure import (
     load_structure, save_structure, get_section, get_adjacent_sections,
     build_transition_context, build_glossary_context, compute_progress,
     find_terminology_issues, generate_scaffold_yaml,
+    _match_heading_to_section, build_all_adjacent_pairs,
 )
 from .. import database as db
 from .. import prompts
@@ -80,6 +84,43 @@ def create_app() -> Flask:
     app.config["MBA_AGENT"] = agent
     app.config["MBA_CITATIONS"] = citations
 
+    log = logging.getLogger("mba_agent")
+
+    def _sanitize_error(e: Exception) -> str:
+        """Log full traceback, return safe user-facing message."""
+        error_id = str(uuid.uuid4())[:8]
+        log.error(f"Error [{error_id}]: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+
+        import anthropic
+        if isinstance(e, anthropic.APITimeoutError):
+            return f"Request timed out. Please try again. (ref: {error_id})"
+        if isinstance(e, anthropic.APIConnectionError):
+            return f"Could not connect to Anthropic API. Check your network. (ref: {error_id})"
+        if isinstance(e, anthropic.AuthenticationError):
+            return f"Invalid API key. Check config.yaml. (ref: {error_id})"
+        if isinstance(e, anthropic.RateLimitError):
+            return f"Rate limited by Anthropic. Wait a moment and retry. (ref: {error_id})"
+        if isinstance(e, anthropic.APIStatusError):
+            return f"API error ({e.status_code}). (ref: {error_id})"
+
+        # Generic — don't expose internals
+        return f"Something went wrong. (ref: {error_id})"
+
+    # ── Security: path validation ──
+
+    def _validate_doc_path(path: str) -> bool:
+        """Validate that path is under allowed directories (prevents path traversal)."""
+        if not path:
+            return False
+        try:
+            resolved = os.path.realpath(path)
+            draft_dir = os.path.realpath(cfg.get("current_draft_dir", "./current_draft"))
+            output_dir = os.path.realpath(cfg.get("output_dir", "./output"))
+            # Allow paths under draft dir or output dir
+            return resolved.startswith(draft_dir) or resolved.startswith(output_dir)
+        except (ValueError, OSError):
+            return False
+
     # ── Pages ──
 
     @app.route("/")
@@ -118,6 +159,10 @@ def create_app() -> Flask:
         db.delete_session(sid)
         return jsonify({"ok": True})
 
+    @app.route("/api/sessions/<sid>/cost", methods=["GET"])
+    def api_session_cost(sid):
+        return jsonify(db.get_session_cost(sid))
+
     # ── Mode auto-inference (hidden modes routed from chat) ──
 
     _CITE_PATTERNS = [
@@ -125,17 +170,42 @@ def create_app() -> Flask:
         re.compile(r'\bcite\b', re.IGNORECASE),
         re.compile(r'\breference\b.*\bfor\b', re.IGNORECASE),
         re.compile(r'\bfind\s+source\b', re.IGNORECASE),
+        re.compile(r'\bwhat\s+do\s+\w+\s+(and|&)\s+\w+\s+(argue|say|claim)\b', re.IGNORECASE),
     ]
     _STRUCTURE_PATTERNS = [
         re.compile(r'\b(outline|structure|gaps?)\b', re.IGNORECASE),
         re.compile(r'\bchapter\b.*\b(order|sequence|missing)\b', re.IGNORECASE),
         re.compile(r'\bsections?\b.*\b(reorganize|reorder|add|remove)\b', re.IGNORECASE),
     ]
+    _DRAFT_PATTERNS = [
+        re.compile(r'\b(write|draft)\s+section\b', re.IGNORECASE),
+        re.compile(r'\b(write|draft)\s+\d+\.?\d*\b', re.IGNORECASE),
+        re.compile(r'\b(write|draft)\s+(the\s+)?(introduction|methodology|discussion|conclusion)\b', re.IGNORECASE),
+    ]
+    _REVIEW_PATTERNS = [
+        re.compile(r'\breview\s+(this|the|my)\b', re.IGNORECASE),
+        re.compile(r'\bcheck\s+(this|the|my)\s+(paragraph|section|text|passage)\b', re.IGNORECASE),
+        re.compile(r'\bfeedback\s+on\b', re.IGNORECASE),
+    ]
+    _SYNTH_PATTERNS = [
+        re.compile(r'\bsynthesize\s+(the\s+)?literature\b', re.IGNORECASE),
+        re.compile(r'\bliterature\s+(review|synthesis)\s+(on|about|for)\b', re.IGNORECASE),
+    ]
 
     def _infer_mode(message: str, requested_mode: str) -> str:
         """Auto-infer hidden modes when user sends from chat."""
         if requested_mode != 'chat':
             return requested_mode
+        # Check patterns in priority order
+        for p in _DRAFT_PATTERNS:
+            if p.search(message):
+                return 'draft'
+        for p in _REVIEW_PATTERNS:
+            if p.search(message):
+                return 'review'
+        for p in _SYNTH_PATTERNS:
+            if p.search(message):
+                return 'synthesize'
         for p in _CITE_PATTERNS:
             if p.search(message):
                 return 'cite'
@@ -143,6 +213,62 @@ def create_app() -> Flask:
             if p.search(message):
                 return 'structure'
         return 'chat'
+
+    # ── Helper: build draft context from student's sections ──
+
+    def _build_draft_context(ps, section_id):
+        """
+        Build context from the student's own written sections (~3K tokens).
+        Includes summaries of prior/following sections plus red thread.
+        """
+        if not ps.sections or not section_id:
+            return ""
+
+        sorted_sections = sorted(ps.sections, key=lambda s: s.order)
+        current_idx = None
+        for i, s in enumerate(sorted_sections):
+            if s.id == section_id:
+                current_idx = i
+                break
+        if current_idx is None:
+            return ""
+
+        parts = []
+        current = sorted_sections[current_idx]
+
+        # Prior sections: summaries of what came before
+        prior = [s for s in sorted_sections[:current_idx] if s.summary]
+        if prior:
+            parts.append("[PRIOR SECTIONS — what the reader has already read]:")
+            for s in prior:
+                parts.append(f"  {s.id} {s.title}: {s.summary}")
+            parts.append("")
+
+        # Current section context
+        parts.append(f"[CURRENT SECTION: {current.id} {current.title}]")
+        if current.notes:
+            parts.append(f"Notes: {current.notes}")
+        if current.target_words:
+            parts.append(f"Target: {current.target_words} words (currently {current.word_count})")
+        parts.append("")
+
+        # Following sections: summaries of what comes after
+        following = [s for s in sorted_sections[current_idx + 1:] if s.summary]
+        if following:
+            parts.append("[FOLLOWING SECTIONS — where the paper goes next]:")
+            for s in following:
+                parts.append(f"  {s.id} {s.title}: {s.summary}")
+            parts.append("")
+
+        # Red thread + argument chain
+        if ps.red_thread:
+            parts.append(f"[RED THREAD]: {ps.red_thread}")
+        if ps.argument_chain:
+            parts.append("[ARGUMENT CHAIN]:")
+            for i, claim in enumerate(ps.argument_chain, 1):
+                parts.append(f"  {i}. {claim}")
+
+        return "\n".join(parts)
 
     # ── Helper: build context for a mode ──
 
@@ -166,6 +292,11 @@ def create_app() -> Flask:
             gloss = build_glossary_context(ps)
             if gloss:
                 extra += "\n\n" + gloss
+            # Add draft context (student's own sections) for draft/review
+            if mode in ("draft", "review"):
+                draft_ctx = _build_draft_context(ps, section_id)
+                if draft_ctx:
+                    extra += "\n\n" + draft_ctx
         elif mode in ("draft", "review") and ps.sections and ps.red_thread:
             # Auto-inject red thread + argument chain for draft/review even without section_id
             parts = [f"[RED THREAD — Core argument]: {ps.red_thread}"]
@@ -252,10 +383,26 @@ def create_app() -> Flask:
                         full_text = chunk["full_text"]
                         found_cites = citations.extract_citations_from_text(full_text, section=mode)
                         db.add_message(session_id, "assistant", full_text, context_sources=source_files)
-                        yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'sources': source_files[:10], 'citations': found_cites[:20]})}\n\n"
+
+                        # Track cost
+                        usage = chunk.get("usage", {})
+                        cost_usd = 0
+                        if usage and session_id:
+                            cost_entry = db.add_cost(
+                                session_id=session_id,
+                                mode=mode,
+                                model=chunk.get("model", ""),
+                                input_tokens=usage.get("input_tokens", 0),
+                                output_tokens=usage.get("output_tokens", 0),
+                                cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+                                cache_create_tokens=usage.get("cache_creation_input_tokens", 0),
+                            )
+                            cost_usd = cost_entry.get("estimated_usd", 0)
+
+                        yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'sources': source_files[:10], 'citations': found_cites[:20], 'cost_usd': cost_usd, 'usage': usage})}\n\n"
 
             except Exception as e:
-                error_msg = f"Error: {str(e)}"
+                error_msg = _sanitize_error(e)
                 if session_id:
                     db.add_message(session_id, "assistant", error_msg)
                 yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
@@ -326,7 +473,7 @@ def create_app() -> Flask:
             })
 
         except Exception as e:
-            error_msg = f"Error: {str(e)}"
+            error_msg = _sanitize_error(e)
             db.add_message(session_id, "assistant", error_msg)
             return jsonify({
                 "session_id": session_id,
@@ -382,12 +529,22 @@ def create_app() -> Flask:
             msg = f"INSTRUCTION: {message}\n\nCURRENT DOCUMENT CONTENT:\n\n{doc_content}"
             return prompts.EDIT_DOCX_SYSTEM, msg, False
         else:
-            # Chat with history
-            history = db.get_messages(data.get("session_id", ""))
-            agent.conversation_history = []
-            for msg in history[:-1]:
-                if msg["role"] in ("user", "assistant"):
-                    agent.conversation_history.append({"role": msg["role"], "content": msg["content"]})
+            # Chat with history — rebuild from DB for session continuity across restarts
+            sid = data.get("session_id", "")
+            if sid:
+                history = db.get_messages(sid)
+                agent.conversation_history = []
+                for msg in history[:-1]:  # Exclude the current message (already added)
+                    if msg["role"] in ("user", "assistant"):
+                        agent.conversation_history.append({
+                            "role": msg["role"],
+                            "content": msg["content"][:8000],  # Trim old messages for context budget
+                        })
+                # Keep last 20 turns (40 messages) to stay within context
+                if len(agent.conversation_history) > 40:
+                    agent.conversation_history = agent.conversation_history[-40:]
+            else:
+                agent.conversation_history = []
             return prompts.CHAT_SYSTEM, message, True
 
     # ── Document API ──
@@ -403,6 +560,8 @@ def create_app() -> Flask:
         filepath = data.get("path", "")
         if not filepath or not os.path.exists(filepath):
             return jsonify({"error": "File not found"}), 404
+        if not _validate_doc_path(filepath):
+            return jsonify({"error": "Access denied"}), 403
         try:
             return jsonify(read_docx(filepath))
         except Exception as e:
@@ -417,6 +576,8 @@ def create_app() -> Flask:
 
         if not source_path or not os.path.exists(source_path):
             return jsonify({"error": "Source file not found"}), 404
+        if not _validate_doc_path(source_path):
+            return jsonify({"error": "Access denied"}), 403
         if not changes:
             return jsonify({"error": "No changes provided"}), 400
 
@@ -484,6 +645,44 @@ def create_app() -> Flask:
     @app.route("/api/documents/versions/<filename>")
     def api_doc_versions(filename):
         return jsonify(db.get_doc_versions(filename))
+
+    @app.route("/api/documents/diff", methods=["POST"])
+    def api_doc_diff():
+        """Compute unified diff between two document versions."""
+        data = request.json or {}
+        version_a = data.get("version_a", "")
+        version_b = data.get("version_b", "")
+
+        if not version_a or not version_b:
+            return jsonify({"error": "Both version_a and version_b required"}), 400
+
+        va = db.get_doc_version(version_a)
+        vb = db.get_doc_version(version_b)
+
+        if not va:
+            return jsonify({"error": f"Version {version_a} not found"}), 404
+        if not vb:
+            return jsonify({"error": f"Version {version_b} not found"}), 404
+
+        diff_lines = list(difflib.unified_diff(
+            va["content"].splitlines(keepends=True),
+            vb["content"].splitlines(keepends=True),
+            fromfile=f"{va['filename']} ({va['created_at'][:16]})",
+            tofile=f"{vb['filename']} ({vb['created_at'][:16]})",
+            lineterm="",
+        ))
+
+        # Count additions and deletions
+        additions = sum(1 for l in diff_lines if l.startswith('+') and not l.startswith('+++'))
+        deletions = sum(1 for l in diff_lines if l.startswith('-') and not l.startswith('---'))
+
+        return jsonify({
+            "diff": "\n".join(diff_lines),
+            "additions": additions,
+            "deletions": deletions,
+            "version_a": {"id": va["id"], "filename": va["filename"], "created_at": va["created_at"]},
+            "version_b": {"id": vb["id"], "filename": vb["filename"], "created_at": vb["created_at"]},
+        })
 
     # ── Citations / BibTeX API ──
 
@@ -627,12 +826,14 @@ def create_app() -> Flask:
             title=data.get("title", ""),
             rq=data.get("research_question", ""),
             methodology=data.get("methodology", "Design Science Research"),
+            language=data.get("language", "en"),
         )
         path = Path("paper_structure.yaml")
-        if not path.exists():
-            path.write_text(content)
-            return jsonify({"ok": True, "path": str(path)})
-        return jsonify({"error": "paper_structure.yaml already exists", "exists": True}), 409
+        overwrite = data.get("overwrite", False)
+        if path.exists() and not overwrite:
+            return jsonify({"error": "paper_structure.yaml already exists", "exists": True}), 409
+        path.write_text(content)
+        return jsonify({"ok": True, "path": str(path)})
 
     @app.route("/api/structure/terminology-check", methods=["POST"])
     def api_terminology_check():
@@ -682,15 +883,282 @@ def create_app() -> Flask:
             sec.starts_with = " ".join(words[:200]) if len(words) > 200 else full_text
             sec.ends_with = " ".join(words[-200:]) if len(words) > 200 else full_text
 
+            # Generate summary if section has content but no summary
+            summary_generated = False
+            if not sec.summary and sec.word_count > 100:
+                text_sample = sec.starts_with[:1500]
+                try:
+                    summary = agent._call(
+                        system="You are a concise academic summarizer. Write a 2-sentence summary of what this section argues or covers. Be specific and academic.",
+                        user_message=f"Section: {sec.title}\n\nExcerpt:\n{text_sample}",
+                        mode="chat",
+                    )
+                    sec.summary = summary.strip()
+                    summary_generated = True
+                except Exception:
+                    pass
+
             save_structure(ps)
             return jsonify({
                 "ok": True,
                 "word_count": sec.word_count,
                 "starts_with_preview": sec.starts_with[:100] + "...",
                 "ends_with_preview": "..." + sec.ends_with[-100:],
+                "summary_generated": summary_generated,
+                "summary": sec.summary,
             })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
+    # ── Full paper export ──
+
+    @app.route("/api/documents/export-full-paper", methods=["POST"])
+    def api_export_full_paper():
+        """Compile all sections into a single DOCX with APA formatting."""
+        data = request.json or {}
+        ps = load_structure()
+        if not ps.sections:
+            return jsonify({"error": "No paper structure loaded"}), 400
+
+        # Build sections with content from DOCX files
+        section_data = []
+        for sec in sorted(ps.sections, key=lambda s: s.order):
+            content = ""
+            if sec.docx_file and os.path.exists(sec.docx_file):
+                try:
+                    doc_data = read_docx(sec.docx_file)
+                    # Try to find the matching section content
+                    for doc_sec in doc_data["sections"]:
+                        matched = _match_heading_to_section(doc_sec["heading"], ps)
+                        if matched and matched.id == sec.id:
+                            content = "\n\n".join(doc_sec["paragraphs"])
+                            break
+                    if not content:
+                        content = doc_data["full_text"]
+                except Exception:
+                    pass
+
+            section_data.append({
+                "id": sec.id,
+                "title": sec.title,
+                "parent_id": sec.parent_id,
+                "content": content,
+                "order": sec.order,
+            })
+
+        output_dir = cfg.get("output_dir", "./output")
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = os.path.join(output_dir, f"full_paper_{timestamp}.docx")
+
+        try:
+            export_full_paper(
+                sections=section_data,
+                output_path=output_path,
+                title=ps.title or data.get("title", ""),
+                author=data.get("author", ""),
+            )
+            return jsonify({
+                "ok": True,
+                "path": output_path,
+                "filename": os.path.basename(output_path),
+                "download_url": f"/api/documents/download/{os.path.basename(output_path)}",
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # ── Auto-sync: extract structure from DOCX ──
+
+    @app.route("/api/structure/auto-sync", methods=["POST"])
+    def api_auto_sync():
+        """
+        Auto-extract structure from a DOCX file.
+        Matches DOCX headings to paper_structure sections, updates
+        word counts, starts_with/ends_with, and optionally generates
+        Sonnet summaries for sections that lack them.
+        """
+        data = request.json or {}
+        docx_path = data.get("docx_path", "")
+        generate_summaries = data.get("generate_summaries", True)
+
+        if not docx_path or not os.path.exists(docx_path):
+            return jsonify({"error": "File not found"}), 404
+
+        ps = load_structure()
+        if not ps.sections:
+            return jsonify({"error": "No paper structure loaded. Generate a scaffold first."}), 400
+
+        try:
+            doc_data = read_docx(docx_path)
+            updated = []
+            unmatched = []
+
+            for doc_section in doc_data["sections"]:
+                heading = doc_section["heading"]
+                if heading == "Preamble":
+                    continue
+
+                sec = _match_heading_to_section(heading, ps)
+                if not sec:
+                    unmatched.append(heading)
+                    continue
+
+                # Update section from DOCX content
+                text = "\n\n".join(doc_section["paragraphs"])
+                words = text.split()
+                sec.word_count = len(words)
+                sec.docx_file = docx_path
+                sec.starts_with = " ".join(words[:200]) if len(words) > 200 else text
+                sec.ends_with = " ".join(words[-200:]) if len(words) > 200 else text
+
+                # Update status based on word count vs target
+                if sec.word_count == 0:
+                    sec.status = "not_started"
+                elif sec.target_words > 0 and sec.word_count >= sec.target_words * 0.8:
+                    if sec.status in ("not_started", "outline"):
+                        sec.status = "drafting"
+                elif sec.word_count > 50:
+                    if sec.status == "not_started":
+                        sec.status = "outline"
+
+                updated.append({
+                    "id": sec.id,
+                    "title": sec.title,
+                    "matched_heading": heading,
+                    "word_count": sec.word_count,
+                    "status": sec.status,
+                })
+
+            # Generate Sonnet summaries for sections that need them
+            summaries_generated = 0
+            if generate_summaries:
+                for item in updated:
+                    sec = get_section(ps, item["id"])
+                    if sec and not sec.summary and sec.word_count > 100:
+                        # Use first 1500 chars for summary generation
+                        text_sample = sec.starts_with[:1500] if sec.starts_with else ""
+                        if text_sample:
+                            try:
+                                summary = agent._call(
+                                    system="You are a concise academic summarizer. Given a section excerpt, write a 2-sentence summary of what this section argues or covers. Be specific and academic.",
+                                    user_message=f"Section: {sec.title}\n\nExcerpt:\n{text_sample}",
+                                    mode="chat",  # Uses Sonnet
+                                )
+                                sec.summary = summary.strip()
+                                summaries_generated += 1
+                            except Exception:
+                                pass  # Skip summary on error
+
+            save_structure(ps)
+
+            return jsonify({
+                "ok": True,
+                "sections_updated": len(updated),
+                "sections_unmatched": len(unmatched),
+                "summaries_generated": summaries_generated,
+                "updated": updated,
+                "unmatched": unmatched,
+            })
+
+        except Exception as e:
+            return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+    # ── Red Thread Audit ──
+
+    @app.route("/api/structure/red-thread-audit", methods=["GET"])
+    def api_red_thread_audit():
+        """
+        Evaluate the red thread (core argument) flow across all section pairs.
+        Uses Sonnet to rate each transition on coherence (1-5) and
+        red thread visibility (visible/partial/lost).
+        """
+        ps = load_structure()
+        if not ps.sections:
+            return jsonify({"error": "No paper structure loaded"}), 400
+        if not ps.red_thread:
+            return jsonify({"error": "No red thread defined in paper structure"}), 400
+
+        pairs = build_all_adjacent_pairs(ps)
+        if not pairs:
+            return jsonify({"error": "No section pairs with content found. Run auto-sync first."}), 400
+
+        results = []
+        for pair in pairs:
+            prev_text = pair["prev_ends_with"] or pair["prev_summary"] or "(no content)"
+            next_text = pair["next_starts_with"] or pair["next_summary"] or "(no content)"
+
+            prompt = (
+                f"RED THREAD: {ps.red_thread}\n\n"
+                f"PREVIOUS SECTION ({pair['prev_id']} {pair['prev_title']}) ENDS WITH:\n"
+                f"{prev_text[:800]}\n\n"
+                f"NEXT SECTION ({pair['next_id']} {pair['next_title']}) STARTS WITH:\n"
+                f"{next_text[:800]}\n\n"
+                "Rate this transition:\n"
+                "1. COHERENCE (1-5): How smoothly does one section flow into the next?\n"
+                "2. RED_THREAD (visible/partial/lost): Is the core argument visible in this transition?\n"
+                "3. SUGGESTION: One sentence on how to improve if score < 4.\n\n"
+                "Reply in exactly this format:\n"
+                "COHERENCE: [1-5]\n"
+                "RED_THREAD: [visible|partial|lost]\n"
+                "SUGGESTION: [text]"
+            )
+
+            try:
+                result = agent._call(
+                    system="You are an academic writing consultant evaluating argument flow between paper sections. Be specific and constructive.",
+                    user_message=prompt,
+                    mode="chat",  # Sonnet
+                )
+
+                # Parse response
+                coherence = 3
+                visibility = "partial"
+                suggestion = ""
+
+                for line in result.strip().split("\n"):
+                    line = line.strip()
+                    if line.upper().startswith("COHERENCE:"):
+                        try:
+                            coherence = int(line.split(":")[1].strip()[0])
+                            coherence = max(1, min(5, coherence))
+                        except (ValueError, IndexError):
+                            pass
+                    elif line.upper().startswith("RED_THREAD:"):
+                        val = line.split(":")[1].strip().lower()
+                        if val in ("visible", "partial", "lost"):
+                            visibility = val
+                    elif line.upper().startswith("SUGGESTION:"):
+                        suggestion = line.split(":", 1)[1].strip()
+
+                results.append({
+                    "from_section": f"{pair['prev_id']} {pair['prev_title']}",
+                    "to_section": f"{pair['next_id']} {pair['next_title']}",
+                    "coherence": coherence,
+                    "red_thread": visibility,
+                    "suggestion": suggestion,
+                })
+
+            except Exception as e:
+                results.append({
+                    "from_section": f"{pair['prev_id']} {pair['prev_title']}",
+                    "to_section": f"{pair['next_id']} {pair['next_title']}",
+                    "coherence": 0,
+                    "red_thread": "error",
+                    "suggestion": str(e),
+                })
+
+        # Compute overall scores
+        scored = [r for r in results if r["coherence"] > 0]
+        avg_coherence = round(sum(r["coherence"] for r in scored) / len(scored), 1) if scored else 0
+        weak_transitions = [r for r in results if r["coherence"] < 3 or r["red_thread"] == "lost"]
+
+        return jsonify({
+            "red_thread": ps.red_thread,
+            "total_pairs": len(results),
+            "average_coherence": avg_coherence,
+            "weak_transitions": len(weak_transitions),
+            "results": results,
+        })
 
     # ── Config API ──
 

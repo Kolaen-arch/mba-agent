@@ -12,9 +12,16 @@ import anthropic
 from . import prompts
 
 
-# Rough token estimation: 1 token ≈ 4 chars for English, ~3 for mixed Danish/English
+# Token estimation: ~4 chars/token for English, ~3.5 for Danish (more compound words, æøå)
 def estimate_tokens(text: str) -> int:
-    return len(text) // 3
+    if not text:
+        return 0
+    # Detect Danish by checking for æøå frequency
+    sample = text[:2000].lower()
+    danish_chars = sum(1 for c in sample if c in 'æøåéü')
+    if danish_chars > 3:
+        return len(text) * 10 // 35  # ~3.5 chars/token for Danish
+    return len(text) // 4  # ~4 chars/token for English
 
 
 # Model routing — which model to use per mode
@@ -98,19 +105,66 @@ class MBAAgent:
         ]
 
     def _build_message(self, user_message: str, context: str, max_context_tokens: int = 80000) -> str:
-        """Build the full user message with context, respecting token budget."""
+        """
+        Build the full user message with context, respecting token budget.
+        Uses structured truncation: structure/citation context is never trimmed,
+        only RAG chunks are removed from the bottom (lowest relevance first).
+        """
         full = ""
         if context:
-            # Trim context if it exceeds budget
             ctx_tokens = estimate_tokens(context)
             if ctx_tokens > max_context_tokens:
-                # Truncate from the end (less relevant chunks)
-                char_limit = max_context_tokens * 3
-                context = context[:char_limit] + "\n\n[... context truncated to fit budget ...]"
+                context = self._smart_truncate(context, max_context_tokens)
 
             full += f"<retrieved_sources>\n{context}\n</retrieved_sources>\n\n"
         full += user_message
         return full
+
+    @staticmethod
+    def _smart_truncate(context: str, max_tokens: int) -> str:
+        """
+        Priority-based truncation. Structure/citation context preserved,
+        RAG chunks trimmed from the bottom (lowest relevance).
+        """
+        # Split context at the --- separator between structure/citations and RAG chunks
+        parts = context.split("\n\n---\n\n", 1)
+
+        if len(parts) == 2:
+            # parts[0] = structure + citations (never trim)
+            # parts[1] = RAG chunks (trim from bottom)
+            priority_ctx = parts[0]
+            rag_ctx = parts[1]
+        else:
+            # No separator — treat entire context as RAG chunks
+            priority_ctx = ""
+            rag_ctx = context
+
+        priority_tokens = estimate_tokens(priority_ctx) if priority_ctx else 0
+        remaining = max_tokens - priority_tokens
+
+        if remaining <= 0:
+            # Even priority context exceeds budget — truncate it at sentence boundary
+            char_limit = max_tokens * 3
+            return priority_ctx[:char_limit] + "\n\n[... context truncated ...]"
+
+        # Trim RAG chunks from the bottom (they're sorted by relevance, best first)
+        rag_chunks = rag_ctx.split("\n\n")
+        kept = []
+        used = 0
+        for chunk in rag_chunks:
+            chunk_tokens = estimate_tokens(chunk)
+            if used + chunk_tokens > remaining:
+                break
+            kept.append(chunk)
+            used += chunk_tokens
+
+        trimmed_rag = "\n\n".join(kept)
+        if len(kept) < len(rag_chunks):
+            trimmed_rag += f"\n\n[... {len(rag_chunks) - len(kept)} lower-relevance chunks trimmed ...]"
+
+        if priority_ctx:
+            return f"{priority_ctx}\n\n---\n\n{trimmed_rag}"
+        return trimmed_rag
 
     def _call(
         self,
@@ -224,6 +278,7 @@ class MBAAgent:
 
         full_text = ""
         is_thinking = False
+        usage = {}
 
         try:
             with self.client.messages.stream(**kwargs) as stream:
@@ -247,6 +302,20 @@ class MBAAgent:
                             if is_thinking:
                                 yield {"type": "thinking_done"}
                                 is_thinking = False
+
+                # Extract usage from final message
+                try:
+                    final = stream.get_final_message()
+                    if final and hasattr(final, 'usage'):
+                        u = final.usage
+                        usage = {
+                            "input_tokens": getattr(u, 'input_tokens', 0),
+                            "output_tokens": getattr(u, 'output_tokens', 0),
+                            "cache_read_input_tokens": getattr(u, 'cache_read_input_tokens', 0),
+                            "cache_creation_input_tokens": getattr(u, 'cache_creation_input_tokens', 0),
+                        }
+                except Exception:
+                    pass
         except GeneratorExit:
             return  # Client disconnected, clean exit
 
@@ -260,7 +329,7 @@ class MBAAgent:
             if len(self.conversation_history) > 40:
                 self.conversation_history = self.conversation_history[-40:]
 
-        yield {"type": "done", "full_text": full_text}
+        yield {"type": "done", "full_text": full_text, "model": model, "usage": usage}
 
     # ── Public methods (non-streaming) ──
 
