@@ -14,11 +14,14 @@ import {
   Send,
   Loader2,
   Brain,
+  StopCircle,
+  RefreshCw,
 } from 'lucide-react'
 import { useAppStore, type Message } from '../../stores/appStore'
 import { useDocumentStore, type PaperSection } from '../../stores/documentStore'
-import { apiRaw } from '../../lib/api'
-import { VISIBLE_MODES, type ModeId } from '../../lib/constants'
+import { apiRaw, api } from '../../lib/api'
+import { MODES, type ModeId, MODEL_OPTIONS, THINK_OPTIONS } from '../../lib/constants'
+import { toast } from '../modals/Toast'
 
 /* ================================================================
    Structure tree (top half)
@@ -28,8 +31,11 @@ function StatusIcon({ status }: { status: string }) {
   if (status === 'complete' || status === 'done') {
     return <CheckCircle2 size={14} className="text-green shrink-0" />
   }
-  if (status === 'in_progress' || status === 'in-progress' || status === 'draft') {
+  if (status === 'in_progress' || status === 'in-progress' || status === 'draft' || status === 'drafting') {
     return <CircleDot size={14} className="text-accent shrink-0" />
+  }
+  if (status === 'outline') {
+    return <CircleDot size={14} className="text-text-muted shrink-0" />
   }
   return <Circle size={14} className="text-text-muted shrink-0" />
 }
@@ -46,6 +52,9 @@ function SectionNode({ section, childSections, depth }: SectionNodeProps) {
   const setSectionId = useAppStore((s) => s.setSectionId)
   const isActive = sectionId === section.id
   const hasChildren = childSections.length > 0
+  const pct = section.target_words > 0
+    ? Math.min(100, Math.round((section.word_count / section.target_words) * 100))
+    : 0
 
   return (
     <div>
@@ -64,12 +73,8 @@ function SectionNode({ section, childSections, depth }: SectionNodeProps) {
       >
         {hasChildren ? (
           <button
-            onClick={(e) => {
-              e.stopPropagation()
-              setOpen(!open)
-            }}
+            onClick={(e) => { e.stopPropagation(); setOpen(!open) }}
             className="shrink-0"
-            aria-label={open ? 'Collapse' : 'Expand'}
           >
             {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </button>
@@ -83,21 +88,29 @@ function SectionNode({ section, childSections, depth }: SectionNodeProps) {
         </span>
       </div>
 
-      {open &&
-        hasChildren &&
-        childSections.map((child) => (
-          <SectionNode
-            key={child.id}
-            section={child}
-            childSections={
-              useDocumentStore
-                .getState()
-                .structure?.sections.filter((s) => s.parent_id === child.id)
-                .sort((a, b) => a.order - b.order) ?? []
-            }
-            depth={depth + 1}
-          />
-        ))}
+      {isActive && section.target_words > 0 && (
+        <div className="mx-2 mb-1" style={{ paddingLeft: `${22 + depth * 14}px` }}>
+          <div className="h-1 rounded-full bg-border-light overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all ${pct >= 80 ? 'bg-green' : 'bg-accent'}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {open && hasChildren && childSections.map((child) => (
+        <SectionNode
+          key={child.id}
+          section={child}
+          childSections={
+            useDocumentStore.getState().structure?.sections
+              .filter((s) => s.parent_id === child.id)
+              .sort((a, b) => a.order - b.order) ?? []
+          }
+          depth={depth + 1}
+        />
+      ))}
     </div>
   )
 }
@@ -107,17 +120,13 @@ function StructureTree() {
 
   if (!structure) {
     return (
-      <div className="flex items-center justify-center h-full text-xs text-text-muted p-4">
-        No paper structure loaded.
-        <br />
-        Run <code className="text-text-secondary">make scaffold</code> to generate one.
+      <div className="flex items-center justify-center h-full text-xs text-text-muted p-4 text-center">
+        No paper structure loaded.<br />Click ⚡ to create one.
       </div>
     )
   }
 
-  const roots = structure.sections
-    .filter((s) => !s.parent_id)
-    .sort((a, b) => a.order - b.order)
+  const roots = structure.sections.filter((s) => !s.parent_id).sort((a, b) => a.order - b.order)
 
   return (
     <div className="p-2 overflow-y-auto">
@@ -128,9 +137,7 @@ function StructureTree() {
         <SectionNode
           key={root.id}
           section={root}
-          childSections={structure.sections
-            .filter((s) => s.parent_id === root.id)
-            .sort((a, b) => a.order - b.order)}
+          childSections={structure.sections.filter((s) => s.parent_id === root.id).sort((a, b) => a.order - b.order)}
           depth={0}
         />
       ))}
@@ -146,6 +153,7 @@ function ChatPanel() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [input, setInput] = useState('')
+  const [showAllModes, setShowAllModes] = useState(false)
 
   const mode = useAppStore((s) => s.mode)
   const setMode = useAppStore((s) => s.setMode)
@@ -162,15 +170,19 @@ function ChatPanel() {
   const appendThinkText = useAppStore((s) => s.appendThinkText)
   const setLastResp = useAppStore((s) => s.setLastResp)
   const sectionId = useAppStore((s) => s.sectionId)
+  const modelOverride = useAppStore((s) => s.modelOverride)
+  const setModelOverride = useAppStore((s) => s.setModelOverride)
+  const thinkOverride = useAppStore((s) => s.thinkOverride)
+  const setThinkOverride = useAppStore((s) => s.setThinkOverride)
 
   const [thinkOpen, setThinkOpen] = useState(false)
 
-  /* auto-scroll */
+  const visibleModes = showAllModes ? MODES : MODES.slice(0, 4)
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, streamText])
 
-  /* send message via SSE streaming — matches Flask /api/chat/stream protocol */
   const handleSend = useCallback(async () => {
     const text = input.trim()
     if (!text || loading) return
@@ -182,18 +194,21 @@ function ChatPanel() {
     setThinkText('')
 
     const abortCtrl = new AbortController()
-    const setAbortController = useAppStore.getState().setAbortController
-    setAbortController(abortCtrl)
+    useAppStore.getState().setAbortController(abortCtrl)
 
     try {
+      const payload: Record<string, any> = {
+        message: text,
+        mode,
+        session_id: session?.id ?? null,
+        section_id: sectionId || undefined,
+      }
+      if (modelOverride) payload.model_override = modelOverride
+      if (thinkOverride) payload.thinking_override = parseInt(thinkOverride)
+
       const res = await apiRaw('/api/chat/stream', {
         method: 'POST',
-        body: JSON.stringify({
-          message: text,
-          mode,
-          session_id: session?.id ?? null,
-          section_id: sectionId || undefined,
-        }),
+        body: JSON.stringify(payload),
         signal: abortCtrl.signal,
       })
 
@@ -222,15 +237,12 @@ function ChatPanel() {
           } else if (line.startsWith('data: ') && evtType) {
             try {
               const data = JSON.parse(line.slice(6))
-
               switch (evtType) {
                 case 'thinking_start':
                   setThinkOpen(true)
                   break
                 case 'thinking':
                   appendThinkText(data.text)
-                  break
-                case 'thinking_done':
                   break
                 case 'text':
                   fullText += data.text
@@ -246,6 +258,14 @@ function ChatPanel() {
                       created_at: new Date().toISOString(),
                     })
                   }
+
+                  // Auto-preview diff after draft completion
+                  if (mode === 'draft' && fullText.trim()) {
+                    const previewDiff = (window as any).__previewDiff
+                    if (typeof previewDiff === 'function') {
+                      setTimeout(() => previewDiff(fullText), 300)
+                    }
+                  }
                   break
                 }
                 case 'error':
@@ -253,9 +273,7 @@ function ChatPanel() {
                   appendStreamText(`\n\n**Error:** ${data.error}`)
                   break
               }
-            } catch {
-              /* skip malformed JSON */
-            }
+            } catch { /* skip malformed JSON */ }
             evtType = ''
           }
         }
@@ -277,10 +295,15 @@ function ChatPanel() {
       useAppStore.getState().setAbortController(null)
     }
   }, [
-    input, loading, mode, session, sectionId,
+    input, loading, mode, session, sectionId, modelOverride, thinkOverride,
     addMessage, setLoading, setStreamText, appendStreamText,
     setThinkText, appendThinkText, setLastResp,
   ])
+
+  const handleAbort = useCallback(() => {
+    const ctrl = useAppStore.getState().abortController
+    if (ctrl) ctrl.abort()
+  }, [])
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -292,26 +315,76 @@ function ChatPanel() {
     [handleSend]
   )
 
+  const handleAutoSync = useCallback(async () => {
+    const docPath = useDocumentStore.getState().currentPath
+    if (!docPath) { toast('Open a document first'); return }
+    try {
+      const r = await api<{ ok: boolean; sections_updated: number }>('/api/structure/auto-sync', {
+        method: 'POST',
+        body: JSON.stringify({ docx_path: docPath, generate_summaries: true }),
+      })
+      if (r.ok) {
+        const s = await api('/api/structure')
+        useDocumentStore.getState().setStructure(s as any)
+        toast(`Synced ${r.sections_updated} sections`)
+      }
+    } catch (e: any) {
+      toast(e.message || 'Sync failed')
+    }
+  }, [])
+
   return (
     <div className="flex h-full flex-col">
-      {/* Mode pills */}
-      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border-light">
-        {VISIBLE_MODES.map((m) => (
+      {/* Mode pills + overrides */}
+      <div className="px-2 py-1.5 border-b border-border-light space-y-1">
+        <div className="flex items-center gap-1 flex-wrap">
+          {visibleModes.map((m) => (
+            <button
+              key={m.id}
+              onClick={() => setMode(m.id)}
+              className={`
+                px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors capitalize
+                ${mode === m.id ? 'bg-accent text-white' : 'text-text-secondary hover:bg-bg-sidebar-hover'}
+              `}
+            >
+              {m.label}
+            </button>
+          ))}
           <button
-            key={m}
-            onClick={() => setMode(m)}
-            className={`
-              px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-colors capitalize
-              ${
-                mode === m
-                  ? 'bg-accent text-white'
-                  : 'text-text-secondary hover:bg-bg-sidebar-hover'
-              }
-            `}
+            onClick={() => setShowAllModes(!showAllModes)}
+            className="text-[10px] text-text-muted hover:text-text-secondary"
           >
-            {m}
+            {showAllModes ? 'Less' : '...'}
           </button>
-        ))}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <select
+            value={modelOverride}
+            onChange={(e) => setModelOverride(e.target.value)}
+            className="text-[10px] bg-transparent text-text-muted border border-border-light rounded px-1.5 py-0.5 outline-none"
+          >
+            {MODEL_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+          <select
+            value={thinkOverride}
+            onChange={(e) => setThinkOverride(e.target.value)}
+            className="text-[10px] bg-transparent text-text-muted border border-border-light rounded px-1.5 py-0.5 outline-none"
+          >
+            {THINK_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>Think: {o.label}</option>
+            ))}
+          </select>
+          <button
+            onClick={handleAutoSync}
+            title="Auto-sync structure from document"
+            className="ml-auto flex items-center gap-1 text-[10px] text-text-muted hover:text-text-secondary transition-colors"
+          >
+            <RefreshCw size={10} /> Sync
+          </button>
+        </div>
       </div>
 
       {/* Messages */}
@@ -321,18 +394,17 @@ function ChatPanel() {
             key={i}
             className={`
               text-xs leading-relaxed rounded-lg px-3 py-2
-              ${
-                m.role === 'user'
-                  ? 'bg-bg-user text-text-primary ml-6'
-                  : 'bg-bg-card text-text-primary border border-border-light mr-2'
+              ${m.role === 'user'
+                ? 'bg-bg-user text-text-primary ml-6'
+                : 'bg-bg-card text-text-primary border border-border-light mr-2'
               }
             `}
           >
             <div className="whitespace-pre-wrap break-words">{m.content}</div>
+            {m.model && <div className="text-[9px] text-text-muted mt-1 text-right">{m.model}</div>}
           </div>
         ))}
 
-        {/* Streaming indicator */}
         {loading && streamText && (
           <div className="text-xs leading-relaxed rounded-lg px-3 py-2 bg-bg-card border border-border-light mr-2">
             <div className="whitespace-pre-wrap break-words">{streamText}</div>
@@ -346,7 +418,6 @@ function ChatPanel() {
           </div>
         )}
 
-        {/* Thinking box */}
         {thinkText && (
           <div className="mx-1">
             <button
@@ -376,17 +447,27 @@ function ChatPanel() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={`Message (${mode})...`}
+            placeholder={MODES.find((m) => m.id === mode)?.hint || `Message (${mode})...`}
             rows={1}
             className="flex-1 resize-none bg-transparent text-xs text-text-primary placeholder:text-text-muted outline-none leading-relaxed max-h-24 overflow-y-auto"
           />
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || loading}
-            className="flex items-center justify-center w-6 h-6 rounded-md bg-accent text-white hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0"
-          >
-            <Send size={12} />
-          </button>
+          {loading ? (
+            <button
+              onClick={handleAbort}
+              className="flex items-center justify-center w-6 h-6 rounded-md bg-red text-white hover:opacity-90 transition-opacity shrink-0"
+              title="Stop"
+            >
+              <StopCircle size={12} />
+            </button>
+          ) : (
+            <button
+              onClick={handleSend}
+              disabled={!input.trim()}
+              className="flex items-center justify-center w-6 h-6 rounded-md bg-accent text-white hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0"
+            >
+              <Send size={12} />
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -398,14 +479,12 @@ function ChatPanel() {
    ================================================================ */
 
 export function RightPanel() {
-  const [splitPct, setSplitPct] = useState(45) // top half %
+  const [splitPct, setSplitPct] = useState(40)
   const draggingRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  /* Resizable divider */
   const handleMouseDown = useCallback(() => {
     draggingRef.current = true
-
     const handleMouseMove = (e: MouseEvent) => {
       if (!draggingRef.current || !containerRef.current) return
       const rect = containerRef.current.getBoundingClientRect()
@@ -413,40 +492,27 @@ export function RightPanel() {
       const pct = Math.min(Math.max((y / rect.height) * 100, 15), 85)
       setSplitPct(pct)
     }
-
     const handleMouseUp = () => {
       draggingRef.current = false
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
     }
-
     document.addEventListener('mousemove', handleMouseMove)
     document.addEventListener('mouseup', handleMouseUp)
   }, [])
 
   return (
     <div ref={containerRef} className="flex h-full flex-col bg-bg-sidebar">
-      {/* Structure tree (top) */}
-      <div
-        className="overflow-hidden"
-        style={{ height: `${splitPct}%` }}
-      >
+      <div className="overflow-hidden" style={{ height: `${splitPct}%` }}>
         <StructureTree />
       </div>
-
-      {/* Resizable divider */}
       <div
         onMouseDown={handleMouseDown}
         className="flex items-center justify-center h-1.5 cursor-row-resize hover:bg-border-light transition-colors shrink-0 group"
       >
         <div className="w-8 h-0.5 rounded-full bg-border group-hover:bg-accent-soft transition-colors" />
       </div>
-
-      {/* Chat (bottom) */}
-      <div
-        className="overflow-hidden border-t border-border-light"
-        style={{ height: `${100 - splitPct}%` }}
-      >
+      <div className="overflow-hidden border-t border-border-light" style={{ height: `${100 - splitPct}%` }}>
         <ChatPanel />
       </div>
     </div>

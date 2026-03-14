@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useAppStore } from './stores/appStore'
 import { useDocumentStore } from './stores/documentStore'
 import { api } from './lib/api'
+import { useKeyboard } from './hooks/useKeyboard'
 import { Sidebar } from './components/layout/Sidebar'
 import { EditorPane } from './components/layout/EditorPane'
 import { RightPanel } from './components/layout/RightPanel'
@@ -14,6 +15,9 @@ export default function App() {
   const setModelInfo = useAppStore((s) => s.setModelInfo)
   const setFiles = useDocumentStore((s) => s.setFiles)
   const setStructure = useDocumentStore((s) => s.setStructure)
+
+  // Global keyboard shortcuts
+  useKeyboard()
 
   useEffect(() => {
     async function bootstrap() {

@@ -222,17 +222,39 @@ def compute_progress(ps: PaperStructure) -> dict:
     }
 
 
+def _normalize_unicode(text: str) -> str:
+    """Normalize Unicode characters for reliable comparison.
+    Handles smart quotes, em-dashes, and other special characters
+    that may differ between DOCX and YAML encodings."""
+    import unicodedata
+    # NFKC normalization: decomposes then recomposes with compatibility
+    text = unicodedata.normalize("NFKC", text)
+    # Replace common problematic characters
+    replacements = {
+        "\u2018": "'", "\u2019": "'",  # smart single quotes
+        "\u201c": '"', "\u201d": '"',  # smart double quotes
+        "\u2013": "-", "\u2014": "-",  # en-dash, em-dash
+        "\u2026": "...",               # ellipsis
+        "\u00a0": " ",                 # non-breaking space
+        "\u00ad": "",                  # soft hyphen
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
+
+
 def _match_heading_to_section(heading: str, ps: PaperStructure) -> Optional[Section]:
     """
     Fuzzy-match a DOCX heading to a structure section.
     Priority: exact title → section ID prefix → substring containment.
+    Handles UTF-8/Unicode mismatches (smart quotes, em-dashes, etc.)
     """
-    heading_clean = heading.strip().lower()
+    heading_clean = _normalize_unicode(heading.strip().lower())
     sorted_sections = sorted(ps.sections, key=lambda s: s.order)
 
     # Pass 1: exact title match
     for s in sorted_sections:
-        if s.title.strip().lower() == heading_clean:
+        if _normalize_unicode(s.title.strip().lower()) == heading_clean:
             return s
 
     # Pass 2: heading starts with section ID (e.g. "2.1 Psychological Ownership")
@@ -240,14 +262,15 @@ def _match_heading_to_section(heading: str, ps: PaperStructure) -> Optional[Sect
         if heading_clean.startswith(s.id.lower()) and len(heading_clean) > len(s.id):
             # Check that the rest roughly matches the title
             rest = heading_clean[len(s.id):].strip().lstrip('.').strip()
-            if rest and s.title.strip().lower().startswith(rest[:10]):
+            title_norm = _normalize_unicode(s.title.strip().lower())
+            if rest and title_norm.startswith(rest[:10]):
                 return s
             # Even if rest doesn't match title, ID prefix is strong enough
             return s
 
     # Pass 3: substring containment (heading contains title or vice versa)
     for s in sorted_sections:
-        title_lower = s.title.strip().lower()
+        title_lower = _normalize_unicode(s.title.strip().lower())
         if len(title_lower) >= 4:
             if title_lower in heading_clean or heading_clean in title_lower:
                 return s
@@ -530,13 +553,18 @@ def generate_scaffold_yaml(
             sec("4", s["lit_review"], target=5000),
         ])
 
-    # Common ending sections
-    disc_id = str(order + 1)
+    # Common ending sections — use sequential IDs based on last top-level section
+    # Find the highest top-level ID already used
+    top_ids = [int(s.id.split(".")[0]) for s in sections if "." not in s.id and s.id.isdigit()]
+    next_id = max(top_ids) + 1 if top_ids else order + 1
+    disc_id = str(next_id)
+    conc_id = str(next_id + 1)
+
     sections.extend([
         sec(disc_id, s["discussion"], target=4000),
         sec(f"{disc_id}.1", s["theoretical_contributions"], parent=disc_id, target=2000),
         sec(f"{disc_id}.2", s["practical_implications"], parent=disc_id, target=2000),
-        sec(str(order + 1), s["conclusion"], target=2000,
+        sec(conc_id, s["conclusion"], target=2000,
             notes="Revisit RQ, summarize contributions, limitations, future research"),
     ])
 

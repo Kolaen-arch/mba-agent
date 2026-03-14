@@ -1400,13 +1400,26 @@ def create_app() -> Flask:
         # Replace section in docx
         result = replace_section(docx_path, sec.title, new_text, docx_path)
 
-        # Update paper structure: word count, starts_with, ends_with
+        # Update paper structure: word count, starts_with, ends_with, status
         words = new_text.split()
         sec.word_count = len(words)
         sec.starts_with = " ".join(words[:30]) if words else ""
         sec.ends_with = " ".join(words[-30:]) if words else ""
-        if sec.status == "outline":
-            sec.status = "drafting"
+
+        # Update status based on word count vs target (Bug #4 fix)
+        if sec.word_count == 0:
+            sec.status = "not_started"
+        elif sec.target_words > 0:
+            ratio = sec.word_count / sec.target_words
+            if ratio >= 0.9:
+                sec.status = "review"
+            elif ratio >= 0.5:
+                sec.status = "drafting"
+            elif sec.word_count > 50:
+                sec.status = "outline"
+        elif sec.word_count > 50 and sec.status == "not_started":
+            sec.status = "outline"
+
         save_structure(ps)
 
         return jsonify({"ok": True, "result": result, "word_count": sec.word_count})
@@ -1583,56 +1596,62 @@ def create_app() -> Flask:
     @app.route("/api/documents/export-latex", methods=["POST"])
     def api_export_latex():
         """Export paper structure to a LaTeX .tex file with \\cite{} references."""
-        data = request.json or {}
-        title = data.get("title", "")
-        author = data.get("author", "")
+        try:
+            data = request.json or {}
+            title = data.get("title", "")
+            author = data.get("author", "")
 
-        ps = load_structure()
-        cfg = load_config()
-        output_dir = cfg.get("output_dir", "output")
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, "paper.tex")
+            ps = load_structure()
+            if not ps or not ps.sections:
+                return jsonify({"error": "No paper structure found. Create one first."}), 400
 
-        # Build section dicts for the handler
-        section_dicts = []
-        for sec in sorted(ps.sections, key=lambda s: s.order):
-            section_dicts.append({
-                "id": sec.id,
-                "title": sec.title,
-                "parent_id": sec.parent_id,
-                "content": sec.content or "",
-                "order": sec.order,
+            cfg = load_config()
+            output_dir = cfg.get("output_dir", "output")
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, "paper.tex")
+
+            # Build section dicts for the handler
+            section_dicts = []
+            for sec in sorted(ps.sections, key=lambda s: s.order):
+                section_dicts.append({
+                    "id": sec.id,
+                    "title": sec.title,
+                    "parent_id": sec.parent_id,
+                    "content": sec.content or "",
+                    "order": sec.order,
+                })
+
+            export_to_latex(section_dicts, citations, output_path, title=title, author=author)
+
+            # Also export BibTeX file alongside .tex
+            bib_path = os.path.join(output_dir, "references.bib")
+            bib_entries = []
+            for key, cit in citations.citations.items():
+                if cit.bib_key and cit.from_bibtex:
+                    # Reconstruct a minimal BibTeX entry from available fields
+                    entry = f"@article{{{cit.bib_key},\n"
+                    if cit.authors:
+                        entry += f"  author = {{{' and '.join(cit.authors)}}},\n"
+                    if cit.year:
+                        entry += f"  year = {{{cit.year}}},\n"
+                    if cit.title:
+                        entry += f"  title = {{{{{cit.title}}}}},\n"
+                    if cit.journal:
+                        entry += f"  journal = {{{cit.journal}}},\n"
+                    if cit.doi:
+                        entry += f"  doi = {{{cit.doi}}},\n"
+                    entry += "}"
+                    bib_entries.append(entry)
+            if bib_entries:
+                Path(bib_path).write_text("\n\n".join(bib_entries), encoding="utf-8")
+
+            return jsonify({
+                "ok": True,
+                "tex_path": output_path,
+                "bib_path": bib_path if bib_entries else None,
+                "sections_exported": len(section_dicts),
             })
-
-        export_to_latex(section_dicts, citations, output_path, title=title, author=author)
-
-        # Also export BibTeX file alongside .tex
-        bib_path = os.path.join(output_dir, "references.bib")
-        bib_entries = []
-        for key, cit in citations.citations.items():
-            if cit.bib_key and cit.from_bibtex:
-                # Reconstruct a minimal BibTeX entry from available fields
-                entry = f"@article{{{cit.bib_key},\n"
-                if cit.authors:
-                    entry += f"  author = {{{' and '.join(cit.authors)}}},\n"
-                if cit.year:
-                    entry += f"  year = {{{cit.year}}},\n"
-                if cit.title:
-                    entry += f"  title = {{{{{cit.title}}}}},\n"
-                if cit.journal:
-                    entry += f"  journal = {{{cit.journal}}},\n"
-                if cit.doi:
-                    entry += f"  doi = {{{cit.doi}}},\n"
-                entry += "}"
-                bib_entries.append(entry)
-        if bib_entries:
-            Path(bib_path).write_text("\n\n".join(bib_entries), encoding="utf-8")
-
-        return jsonify({
-            "ok": True,
-            "tex_path": output_path,
-            "bib_path": bib_path if bib_entries else None,
-            "sections_exported": len(section_dicts),
-        })
+        except Exception as e:
+            return jsonify({"error": f"LaTeX export failed: {str(e)}"}), 500
 
     return app

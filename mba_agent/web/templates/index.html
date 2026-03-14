@@ -2325,6 +2325,7 @@ async function showBudget() {
    ═══════════════════════════════════════════════════════ */
 function toggleTpl() {
   const el = document.getElementById('tplActions');
+  if (!el) return;
   if (S.secId) el.classList.add('is-visible');
   else el.classList.remove('is-visible');
 }

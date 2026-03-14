@@ -1,25 +1,33 @@
-import { useEditor, EditorContent, type JSONContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import { Underline } from '@tiptap/extension-underline';
-import { TextAlign } from '@tiptap/extension-text-align';
-import { Highlight } from '@tiptap/extension-highlight';
-import { Placeholder } from '@tiptap/extension-placeholder';
-import { Table } from '@tiptap/extension-table';
-import { TableRow } from '@tiptap/extension-table-row';
-import { TableCell } from '@tiptap/extension-table-cell';
-import { TableHeader } from '@tiptap/extension-table-header';
-import { Typography } from '@tiptap/extension-typography';
-import { useEffect, useCallback, useRef, useState } from 'react';
-import { MessageSquareMore, Sparkles, BookOpen } from 'lucide-react';
-import EditorToolbar from './EditorToolbar';
+import { useEditor, EditorContent, type JSONContent } from '@tiptap/react'
+import StarterKit from '@tiptap/starter-kit'
+import { Underline } from '@tiptap/extension-underline'
+import { TextAlign } from '@tiptap/extension-text-align'
+import { Highlight } from '@tiptap/extension-highlight'
+import { Placeholder } from '@tiptap/extension-placeholder'
+import { Table } from '@tiptap/extension-table'
+import { TableRow } from '@tiptap/extension-table-row'
+import { TableCell } from '@tiptap/extension-table-cell'
+import { TableHeader } from '@tiptap/extension-table-header'
+import { Typography } from '@tiptap/extension-typography'
+import { useEffect, useCallback, useRef, useState } from 'react'
+import { MessageSquareMore, Sparkles, BookOpen } from 'lucide-react'
+import EditorToolbar from './EditorToolbar'
+import SlashCommandMenu from './SlashCommandMenu'
+import { InsertionMark, DeletionMark } from '../../extensions/trackChanges'
+import { CitationNode } from '../../extensions/citationNode'
+import { SectionBreak } from '../../extensions/sectionBreak'
+import { GhostText } from '../../extensions/ghostText'
+import { SlashCommand, setSlashCommandCallbacks, type SlashCommandItem } from '../../extensions/slashCommand'
 
-export type SelectionAction = 'review' | 'improve' | 'find-citation';
+export type SelectionAction = 'review' | 'improve' | 'find-citation'
 
 interface EditorProps {
-  content: JSONContent | null;
-  onUpdate: (content: JSONContent) => void;
-  editable?: boolean;
-  onSelectionAction?: (action: SelectionAction, selectedText: string) => void;
+  content: JSONContent | null
+  onUpdate: (content: JSONContent) => void
+  editable?: boolean
+  onSelectionAction?: (action: SelectionAction, selectedText: string) => void
+  onSlashCommand?: (command: SlashCommandItem, context: string) => void
+  diffHtml?: string | null
 }
 
 export default function Editor({
@@ -27,9 +35,19 @@ export default function Editor({
   onUpdate,
   editable = true,
   onSelectionAction,
+  onSlashCommand,
+  diffHtml,
 }: EditorProps) {
-  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // Wire up slash command callbacks
+  useEffect(() => {
+    if (onSlashCommand) {
+      setSlashCommandCallbacks({ onCommand: onSlashCommand })
+    }
+    return () => setSlashCommandCallbacks({})
+  }, [onSlashCommand])
 
   const editor = useEditor({
     extensions: [
@@ -43,68 +61,88 @@ export default function Editor({
       TableCell,
       TableHeader,
       Typography,
+      // Track changes marks (Phase 3)
+      InsertionMark,
+      DeletionMark,
+      // AI extensions (Phase 6)
+      CitationNode,
+      SectionBreak,
+      GhostText,
+      SlashCommand,
     ],
     editable,
     content: content ?? undefined,
     onUpdate: ({ editor: ed }) => {
-      onUpdate(ed.getJSON());
+      onUpdate(ed.getJSON())
     },
     editorProps: {
       attributes: { class: 'tiptap' },
     },
     onSelectionUpdate: ({ editor: ed }) => {
-      const { from, to } = ed.state.selection;
-      const text = ed.state.doc.textBetween(from, to, ' ');
+      const { from, to } = ed.state.selection
+      const text = ed.state.doc.textBetween(from, to, ' ')
       if (text.trim().length > 2 && ed.isEditable) {
-        // Get coordinates of selection
-        const coords = ed.view.coordsAtPos(from);
-        setMenuPos({ x: coords.left, y: coords.top - 45 });
+        const coords = ed.view.coordsAtPos(from)
+        setMenuPos({ x: coords.left, y: coords.top - 45 })
       } else {
-        setMenuPos(null);
+        setMenuPos(null)
       }
     },
-  });
+  })
 
   // Sync editable
   useEffect(() => {
     if (editor && editor.isEditable !== editable) {
-      editor.setEditable(editable);
+      editor.setEditable(editable)
     }
-  }, [editor, editable]);
+  }, [editor, editable])
 
-  // Sync content from props
+  // Sync content from props (normal mode)
   useEffect(() => {
-    if (!editor || !content) return;
-    const currentJSON = JSON.stringify(editor.getJSON());
-    const incomingJSON = JSON.stringify(content);
+    if (!editor || !content || diffHtml) return
+    const currentJSON = JSON.stringify(editor.getJSON())
+    const incomingJSON = JSON.stringify(content)
     if (currentJSON !== incomingJSON) {
-      editor.commands.setContent(content);
+      editor.commands.setContent(content)
     }
-  }, [editor, content]);
+  }, [editor, content, diffHtml])
+
+  // Render diff HTML when in diff mode
+  useEffect(() => {
+    if (!editor || !diffHtml) return
+    editor.setEditable(false)
+    editor.commands.setContent(diffHtml)
+  }, [editor, diffHtml])
+
+  // Restore editability when leaving diff mode
+  useEffect(() => {
+    if (!editor || diffHtml) return
+    editor.setEditable(editable)
+  }, [editor, diffHtml, editable])
 
   // Close menu on click outside
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuPos(null);
+        setMenuPos(null)
       }
-    };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, []);
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
 
   const handleSelectionAction = useCallback(
     (action: SelectionAction) => {
-      if (!editor || !onSelectionAction) return;
-      const { from, to } = editor.state.selection;
-      const selectedText = editor.state.doc.textBetween(from, to, ' ');
+      if (!editor || !onSelectionAction) return
+      const { from, to } = editor.state.selection
+      const selectedText = editor.state.doc.textBetween(from, to, ' ')
       if (selectedText.trim()) {
-        onSelectionAction(action, selectedText);
-        setMenuPos(null);
+        onSelectionAction(action, selectedText)
+        setMenuPos(null)
       }
     },
     [editor, onSelectionAction],
-  );
+  )
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -125,7 +163,7 @@ export default function Editor({
         </div>
 
         {/* Floating selection menu */}
-        {menuPos && (
+        {menuPos && !diffHtml && (
           <div
             ref={menuRef}
             className="fixed z-50 flex items-center gap-1 bg-bg-card border border-border rounded-lg shadow-lg px-1 py-1"
@@ -148,17 +186,20 @@ export default function Editor({
             />
           </div>
         )}
+
+        {/* Slash command dropdown */}
+        <SlashCommandMenu />
       </div>
     </div>
-  );
+  )
 }
 
 /* ---------- Internal sub-component ---------- */
 
 interface BubbleButtonProps {
-  onClick: () => void;
-  label: string;
-  icon: React.ReactNode;
+  onClick: () => void
+  label: string
+  icon: React.ReactNode
 }
 
 function BubbleButton({ onClick, label, icon }: BubbleButtonProps) {
@@ -178,5 +219,5 @@ function BubbleButton({ onClick, label, icon }: BubbleButtonProps) {
       {icon}
       <span>{label}</span>
     </button>
-  );
+  )
 }
