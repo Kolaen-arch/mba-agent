@@ -16,7 +16,7 @@ from pathlib import Path
 
 import markdown as md
 import yaml
-from flask import Flask, Response, request, jsonify, render_template, send_file
+from flask import Flask, Response, request, jsonify, render_template, send_file, send_from_directory
 
 from ..agent import MBAAgent
 from ..store import PaperStore
@@ -158,9 +158,29 @@ def create_app() -> Flask:
 
     # ── Pages ──
 
+    # React frontend (served from static/dist/ if built)
+    react_dist = os.path.join(os.path.dirname(__file__), "static", "dist")
+
     @app.route("/")
     def index():
+        # Serve React build if it exists, otherwise fall back to legacy SPA
+        react_index = os.path.join(react_dist, "index.html")
+        if os.path.exists(react_index):
+            return send_file(react_index)
         return render_template("index.html")
+
+    @app.route("/legacy")
+    def legacy_index():
+        """Original SPA — always available as fallback."""
+        return render_template("index.html")
+
+    @app.route("/assets/<path:filename>")
+    def react_assets(filename):
+        """Serve React build assets (JS, CSS)."""
+        assets_dir = os.path.join(react_dist, "assets")
+        if os.path.exists(os.path.join(assets_dir, filename)):
+            return send_from_directory(assets_dir, filename)
+        return ("Not found", 404)
 
     # ── Session API ──
 

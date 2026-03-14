@@ -1,4 +1,4 @@
-.PHONY: help install ingest extract serve serve-dev chat status references scaffold import-bib
+.PHONY: help install ingest extract serve serve-dev chat status references scaffold import-bib frontend dev
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -32,3 +32,15 @@ scaffold: ## Generate paper_structure.yaml template
 
 import-bib: ## Import references from .bib or .json file
 	python -m mba_agent import-bib
+
+frontend: ## Build React frontend (output → mba_agent/web/static/dist/)
+	cd frontend && npm run build
+
+frontend-dev: ## Run React dev server (Vite + HMR, proxies to Flask)
+	cd frontend && npm run dev
+
+dev: ## Run Flask backend + React dev server together
+	@echo "Starting Flask on :5000 and Vite on :5173..."
+	@echo "Open http://localhost:5173 for development"
+	python -m flask --app "mba_agent.web.app:create_app()" run --host 0.0.0.0 --port 5000 --reload &
+	cd frontend && npm run dev

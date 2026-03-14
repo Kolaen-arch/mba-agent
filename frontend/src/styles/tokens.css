@@ -1,0 +1,48 @@
+/* Academic Library Design Tokens */
+:root {
+  /* Background layers */
+  --bg: #FAF8F4;
+  --bg-sidebar: #F3EDE4;
+  --bg-sidebar-hover: #EAE3D8;
+  --bg-sidebar-active: #E2DACF;
+  --bg-card: #FFFFFF;
+  --bg-paper: #FDFCFA;
+  --bg-user: #F0EBE2;
+  --bg-code: #F5F0E8;
+  --bg-dark: #2D2A26;
+
+  /* Borders */
+  --border: #DDD6CB;
+  --border-light: #EAE3D8;
+  --border-focus: #B5A08A;
+
+  /* Text */
+  --text: #2D2A26;
+  --text-secondary: #6B6560;
+  --text-muted: #9A948C;
+  --text-inverse: #FDFCFA;
+
+  /* Accent — warm bronze */
+  --accent: #8B6E4E;
+  --accent-hover: #7A5F42;
+  --accent-soft: #D4C4AE;
+
+  /* Status */
+  --green: #5A8C6F;
+  --red: #B85C5C;
+  --blue: #5A7EB8;
+
+  /* Fonts */
+  --font-ui: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-serif: 'Lora', Georgia, 'Times New Roman', serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+
+  /* Radius */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --r-pill: 24px;
+
+  /* Motion */
+  --ease: 150ms ease;
+}

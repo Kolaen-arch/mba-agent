@@ -1874,6 +1874,10 @@ async function send() {
           else if (evtType === 'done') {
             if (!S.ses && data.session_id) { S.ses = { id: data.session_id }; loadSes(); }
             finishStream(data.sources, model);
+            // BUG #7 fix: trigger diff preview when draft completes for a section
+            if (S.mode === 'draft' && S.dPath && S.secId && S.lastResp) {
+              previewDiff(S.lastResp);
+            }
             if (data.citations?.length) toast(`${data.citations.length} citations tracked`);
             if (data.cost_usd > 0) {
               document.getElementById('sCost').textContent = '$' + data.cost_usd.toFixed(4);
@@ -1951,7 +1955,11 @@ async function openD(path) {
     S.dPath = path;
     S.dData = d;
     document.getElementById('dTit').textContent = path.split('/').pop();
-    document.getElementById('dBd').innerHTML = rmd(d.full_text);
+    const dBd = document.getElementById('dBd');
+    const selMenuEl = document.getElementById('selMenu');
+    dBd.innerHTML = rmd(d.full_text);
+    // Re-append selMenu — innerHTML destroyed it
+    if (selMenuEl) dBd.appendChild(selMenuEl);
     document.querySelectorAll('.doc-file-item').forEach(el =>
       el.classList.toggle('active', el.dataset.p === path)
     );
@@ -2217,7 +2225,10 @@ async function previewDiff(newText) {
       body: JSON.stringify({ section_id: S.secId, new_text: newText, docx_path: S.dPath })
     });
     if (d.error) return toast(d.error);
-    document.getElementById('dBd').innerHTML = d.diff_html;
+    const dBdEl = document.getElementById('dBd');
+    const selMenuDiff = document.getElementById('selMenu');
+    dBdEl.innerHTML = d.diff_html;
+    if (selMenuDiff) dBdEl.appendChild(selMenuDiff);
     document.getElementById('diffActions').classList.add('is-visible');
     toast(`Diff: ${d.delta > 0 ? '+' : ''}${d.delta} words`);
   } catch (e) { toast('Diff failed'); }
@@ -2244,7 +2255,12 @@ function rejectDiff() {
   document.getElementById('diffActions').classList.remove('is-visible');
   _pendingDraft = '';
   // Restore original doc content
-  if (S.dData) document.getElementById('dBd').innerHTML = rmd(S.dData.full_text);
+  if (S.dData) {
+    const dBdRej = document.getElementById('dBd');
+    const selMenuRej = document.getElementById('selMenu');
+    dBdRej.innerHTML = rmd(S.dData.full_text);
+    if (selMenuRej) dBdRej.appendChild(selMenuRej);
+  }
   toast('Draft rejected');
 }
 
