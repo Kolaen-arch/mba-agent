@@ -186,7 +186,9 @@ def create_app() -> Flask:
         # Serve React build if it exists, otherwise fall back to legacy SPA
         react_index = os.path.join(react_dist, "index.html")
         if os.path.exists(react_index):
-            return send_file(react_index)
+            resp = send_file(react_index)
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            return resp
         return render_template("index.html")
 
     @app.route("/legacy")
