@@ -354,11 +354,22 @@ def export_full_paper(
     return output_path
 
 
-def compute_inline_diff(old_text: str, new_text: str) -> str:
-    """Produce HTML with <ins> and <del> tags for word-level inline diff."""
+def _line_to_html_tag(line: str) -> tuple[str, str, str]:
+    """Return (open_tag, content, close_tag) for a markdown line."""
+    stripped = line.strip()
+    if stripped.startswith("### "):
+        return "<h3>", stripped[4:], "</h3>"
+    elif stripped.startswith("## "):
+        return "<h2>", stripped[3:], "</h2>"
+    elif stripped.startswith("# "):
+        return "<h1>", stripped[2:], "</h1>"
+    else:
+        return "<p>", stripped, "</p>"
+
+
+def _word_diff(old_words: list[str], new_words: list[str]) -> str:
+    """Word-level diff within a single paragraph/heading."""
     import difflib
-    old_words = old_text.split()
-    new_words = new_text.split()
     matcher = difflib.SequenceMatcher(None, old_words, new_words)
     parts = []
     for op, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -372,6 +383,67 @@ def compute_inline_diff(old_text: str, new_text: str) -> str:
         elif op == 'delete':
             parts.append(f'<del>{" ".join(old_words[i1:i2])}</del>')
     return ' '.join(parts)
+
+
+def compute_inline_diff(old_text: str, new_text: str) -> str:
+    """Produce structured HTML diff with headings and paragraphs preserved.
+
+    Works in two passes:
+    1. Split both texts into paragraphs (by blank lines).
+    2. Align paragraphs with difflib, then do word-level diff within each.
+    """
+    import difflib
+
+    def _split_blocks(text: str) -> list[str]:
+        """Split text into non-empty paragraph blocks."""
+        blocks = []
+        for block in re.split(r'\n\s*\n', text):
+            b = block.strip()
+            if b:
+                blocks.append(b)
+        return blocks
+
+    old_blocks = _split_blocks(old_text)
+    new_blocks = _split_blocks(new_text)
+
+    # Align blocks (paragraph-level)
+    matcher = difflib.SequenceMatcher(None, old_blocks, new_blocks)
+    html_parts = []
+
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op == 'equal':
+            for block in new_blocks[j1:j2]:
+                tag_open, content, tag_close = _line_to_html_tag(block)
+                html_parts.append(f"{tag_open}{content}{tag_close}")
+        elif op == 'replace':
+            # Pair up old/new blocks for word-level diff
+            old_slice = old_blocks[i1:i2]
+            new_slice = new_blocks[j1:j2]
+            max_len = max(len(old_slice), len(new_slice))
+            for k in range(max_len):
+                old_b = old_slice[k] if k < len(old_slice) else ""
+                new_b = new_slice[k] if k < len(new_slice) else ""
+                if new_b:
+                    tag_open, new_content, tag_close = _line_to_html_tag(new_b)
+                elif old_b:
+                    tag_open, _, tag_close = _line_to_html_tag(old_b)
+                    new_content = ""
+                else:
+                    continue
+                old_words = old_b.lstrip("#").strip().split() if old_b else []
+                new_words = new_content.split() if new_content else []
+                diff_content = _word_diff(old_words, new_words)
+                html_parts.append(f"{tag_open}{diff_content}{tag_close}")
+        elif op == 'insert':
+            for block in new_blocks[j1:j2]:
+                tag_open, content, tag_close = _line_to_html_tag(block)
+                html_parts.append(f"{tag_open}<ins>{content}</ins>{tag_close}")
+        elif op == 'delete':
+            for block in old_blocks[i1:i2]:
+                tag_open, content, tag_close = _line_to_html_tag(block)
+                html_parts.append(f"{tag_open}<del>{content}</del>{tag_close}")
+
+    return '\n'.join(html_parts)
 
 
 def replace_section(source_path: str, heading: str, new_text: str, output_path: str) -> str:

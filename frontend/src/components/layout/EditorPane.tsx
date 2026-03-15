@@ -203,6 +203,13 @@ export function EditorPane() {
       setDiffHtml(null)
       setDiffStats(null)
       await loadDocument(currentPath)
+      // Auto-sync structure from updated docx, then reload
+      try {
+        await api('/api/structure/auto-sync', {
+          method: 'POST',
+          body: JSON.stringify({ docx_path: currentPath, generate_summaries: false }),
+        })
+      } catch {}
       const s = await api('/api/structure')
       useDocumentStore.getState().setStructure(s as any)
       toast('Draft accepted!')

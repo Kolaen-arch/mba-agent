@@ -1573,6 +1573,30 @@ def create_app() -> Flask:
                 )
                 write_docx_from_markdown(new_text, docx_path)
                 words = new_text.split()
+                # Auto-sync structure from the rewritten docx
+                ps = load_structure()
+                if ps.sections:
+                    new_doc_data = read_docx(docx_path)
+                    for doc_sec in new_doc_data["sections"]:
+                        heading = doc_sec["heading"]
+                        if heading == "Preamble":
+                            continue
+                        matched = _match_heading_to_section(heading, ps)
+                        if matched:
+                            sec_text = "\n\n".join(doc_sec["paragraphs"])
+                            sec_words = sec_text.split()
+                            matched.word_count = len(sec_words)
+                            matched.starts_with = " ".join(sec_words[:200]) if len(sec_words) > 200 else sec_text
+                            matched.ends_with = " ".join(sec_words[-200:]) if len(sec_words) > 200 else sec_text
+                            if matched.word_count == 0:
+                                matched.status = "not_started"
+                            elif matched.target_words > 0 and matched.word_count / matched.target_words >= 0.9:
+                                matched.status = "review"
+                            elif matched.target_words > 0 and matched.word_count / matched.target_words >= 0.5:
+                                matched.status = "drafting"
+                            elif matched.word_count > 50 and matched.status == "not_started":
+                                matched.status = "outline"
+                    save_structure(ps)
                 return jsonify({"ok": True, "result": f"Full document rewritten ({len(words)} words)", "word_count": len(words)})
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
