@@ -4,6 +4,7 @@ Delegates to backend adapters (Claude, Gemini).
 Handles model routing, context assembly, conversation history.
 """
 
+import re
 from typing import Generator
 
 from .llm_adapter import LLMBackend
@@ -86,6 +87,10 @@ class MBAAgent:
         """Find the backend that handles this model."""
         if model in self.backends:
             return self.backends[model]
+        # Strip OpenRouter suffixes like :online for lookup
+        base_model = model.split(":")[0] if ":" in model else model
+        if base_model in self.backends:
+            return self.backends[base_model]
         # Fallback: match by provider prefix
         for key, backend in self.backends.items():
             if model.startswith(key.split("-")[0]):
@@ -108,9 +113,14 @@ class MBAAgent:
         Build the full user message with context, respecting token budget.
         Uses structured truncation: structure/citation context is never trimmed,
         only RAG chunks are removed from the bottom (lowest relevance first).
+        Compresses lower-ranked chunks when context exceeds 60% of budget.
         """
         full = ""
         if context:
+            ctx_tokens = estimate_tokens(context)
+            # Compress lower-ranked chunks if context is large
+            if ctx_tokens > max_context_tokens * 0.6:
+                context = self._compress_low_rank_chunks(context, top_k_full=8)
             ctx_tokens = estimate_tokens(context)
             if ctx_tokens > max_context_tokens:
                 context = self._smart_truncate(context, max_context_tokens)
@@ -118,6 +128,43 @@ class MBAAgent:
             full += f"<retrieved_sources>\n{context}\n</retrieved_sources>\n\n"
         full += user_message
         return full
+
+    @staticmethod
+    def _compress_low_rank_chunks(context: str, top_k_full: int = 8) -> str:
+        """Keep top chunks verbatim, compress lower-ranked to source tag + key sentences.
+        Saves ~40% tokens on the lower-ranked portion."""
+        # Split on the priority/RAG boundary first
+        boundary = "\n\n---\n\n"
+        parts = context.split(boundary, 1)
+        if len(parts) == 2:
+            priority_ctx = parts[0]
+            rag_ctx = parts[1]
+        else:
+            priority_ctx = ""
+            rag_ctx = context
+
+        # Split RAG chunks and compress lower ones
+        chunks = rag_ctx.split("\n\n---\n\n")
+        result = []
+        for i, chunk in enumerate(chunks):
+            if i < top_k_full:
+                result.append(chunk)
+            else:
+                # Extract source tag line and compress text to first 2 sentences
+                lines = chunk.split("\n", 1)
+                tag = lines[0] if lines[0].startswith("[") else ""
+                text = lines[1] if len(lines) > 1 else lines[0]
+                sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+                compressed = " ".join(sentences[:2])
+                if tag:
+                    result.append(f"{tag}\n{compressed}")
+                else:
+                    result.append(compressed)
+
+        rag_compressed = "\n\n---\n\n".join(result)
+        if priority_ctx:
+            return f"{priority_ctx}{boundary}{rag_compressed}"
+        return rag_compressed
 
     @staticmethod
     def _smart_truncate(context: str, max_tokens: int) -> str:
@@ -230,6 +277,10 @@ class MBAAgent:
             history = list(self.conversation_history)
 
         backend = self._get_backend(model)
+        # Pass per-request model (e.g. with :online suffix) to backend
+        saved_model = getattr(backend, 'model', None)
+        if hasattr(backend, 'model'):
+            backend.model = model
         full_text = ""
 
         for chunk in backend.stream(
@@ -243,6 +294,10 @@ class MBAAgent:
             if chunk["type"] == "done":
                 full_text = chunk.get("full_text", "")
             yield chunk
+
+        # Restore original model after request
+        if saved_model is not None:
+            backend.model = saved_model
 
         if use_history:
             self.conversation_history.append(

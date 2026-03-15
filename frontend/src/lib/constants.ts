@@ -15,9 +15,10 @@ export const VISIBLE_MODES: ModeId[] = ['chat', 'draft', 'review', 'synthesize']
 
 export const MODEL_OPTIONS = [
   { value: '', label: 'Auto' },
+  { value: 'openai/gpt-5.4', label: 'GPT-5.4' },
   { value: 'claude-opus-4-6', label: 'Opus' },
   { value: 'claude-sonnet-4-5-20250929', label: 'Sonnet' },
-  { value: 'gemini-2.5-pro', label: 'Gemini' },
+  { value: 'gemini-3.1-pro-preview', label: 'Gemini' },
 ] as const;
 
 export const THINK_OPTIONS = [

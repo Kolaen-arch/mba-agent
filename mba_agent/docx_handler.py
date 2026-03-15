@@ -428,14 +428,14 @@ def replace_section(source_path: str, heading: str, new_text: str, output_path: 
 
 def list_docx_files(directory: str) -> list[dict]:
     """List all .docx files in a directory with basic info."""
-    path = Path(directory)
+    path = Path(directory).resolve()
     files = []
     for f in sorted(path.glob("**/*.docx")):
         try:
             doc = Document(str(f))
             word_count = sum(len(p.text.split()) for p in doc.paragraphs)
             files.append({
-                "path": str(f),
+                "path": str(f.resolve()),
                 "filename": f.name,
                 "relative_path": str(f.relative_to(path)),
                 "word_count": word_count,
@@ -443,7 +443,7 @@ def list_docx_files(directory: str) -> list[dict]:
             })
         except Exception:
             files.append({
-                "path": str(f),
+                "path": str(f.resolve()),
                 "filename": f.name,
                 "relative_path": str(f.relative_to(path)),
                 "word_count": 0,

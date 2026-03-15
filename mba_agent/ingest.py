@@ -22,13 +22,25 @@ class Chunk:
     chunk_index: int
     metadata: dict = field(default_factory=dict)
     label: str = ""  # User-defined tag, e.g. "my paper, first semester"
+    section_header: str = ""  # Detected heading, e.g. "Literature Review"
+    doc_type: str = ""  # Classified type: own_work, textbook, article, case
 
     @property
     def source_tag(self) -> str:
         prefix = f"[{self.label}] " if self.label else ""
+        sec = f" | Section: {self.section_header}" if self.section_header else ""
         if self.page_start == self.page_end:
-            return f"{prefix}[SOURCE: {self.source_file}, page {self.page_start}]"
-        return f"{prefix}[SOURCE: {self.source_file}, pages {self.page_start}-{self.page_end}]"
+            return f"{prefix}[SOURCE: {self.source_file}, page {self.page_start}{sec}]"
+        return f"{prefix}[SOURCE: {self.source_file}, pages {self.page_start}-{self.page_end}{sec}]"
+
+    @property
+    def embedding_text(self) -> str:
+        """Text with contextual header prepended for embedding."""
+        header_parts = [f"Document: {self.source_file}"]
+        if self.section_header:
+            header_parts.append(f"Section: {self.section_header}")
+        header = " | ".join(header_parts)
+        return f"[{header}]\n{self.text}"
 
     def to_context_str(self) -> str:
         return f"{self.source_tag}\n{self.text}"
@@ -139,19 +151,70 @@ def _clean_page_text(text: str) -> str:
     return '\n'.join(cleaned)
 
 
-def extract_pdf_text(pdf_path: str, strip_references: bool = True) -> list[tuple[int, str]]:
+def _detect_headings_from_dict(page) -> list[tuple[str, float]]:
+    """Detect headings by font size from page dict blocks.
+    Returns list of (heading_text, font_size) found on the page."""
+    try:
+        blocks = page.get_text("dict")["blocks"]
+    except Exception:
+        return []
+
+    # Collect all text spans with their font sizes
+    spans_info = []
+    for block in blocks:
+        if block.get("type") != 0:  # text blocks only
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                text = span.get("text", "").strip()
+                size = span.get("size", 0)
+                if text and size > 0:
+                    spans_info.append((text, size))
+
+    if len(spans_info) < 3:
+        return []
+
+    # Median font size = body text size
+    sizes = sorted(s for _, s in spans_info)
+    median_size = sizes[len(sizes) // 2]
+
+    # Headings: significantly larger than body, reasonable length
+    headings = []
+    for text, size in spans_info:
+        if size > median_size * 1.15 and 3 < len(text) < 200:
+            # Skip lines that look like page numbers or artifacts
+            if re.match(r'^\d+\s*$', text):
+                continue
+            headings.append((text, size))
+
+    return headings
+
+
+def extract_pdf_text(
+    pdf_path: str,
+    strip_references: bool = True,
+    detect_headings: bool = True,
+) -> list[tuple[int, str, str]]:
     """
     Extract and clean text from PDF.
-    Returns list of (page_number, text) tuples.
+    Returns list of (page_number, text, current_heading) tuples.
     Stops at the References section if strip_references=True.
     """
     doc = fitz.open(pdf_path)
     pages = []
     refs_started = False
+    current_heading = ""
 
     for page_num in range(len(doc)):
         page = doc[page_num]
         raw_text = page.get_text("text")
+
+        # Detect headings from font-size analysis
+        if detect_headings:
+            headings = _detect_headings_from_dict(page)
+            if headings:
+                # Use the last heading on the page (most likely the active section)
+                current_heading = headings[-1][0]
 
         # Clean
         text = _clean_page_text(raw_text)
@@ -160,7 +223,6 @@ def extract_pdf_text(pdf_path: str, strip_references: bool = True) -> list[tuple
         if strip_references and not refs_started:
             for line in text.split('\n'):
                 if _is_refs_start(line):
-                    # Keep content before the references heading
                     idx = text.find(line)
                     if idx > 0:
                         text = text[:idx].strip()
@@ -170,7 +232,7 @@ def extract_pdf_text(pdf_path: str, strip_references: bool = True) -> list[tuple
                     break
 
         if refs_started and not text:
-            continue  # Skip pure reference pages
+            continue
 
         # Normalize whitespace
         text = re.sub(r'\n{3,}', '\n\n', text)
@@ -178,7 +240,7 @@ def extract_pdf_text(pdf_path: str, strip_references: bool = True) -> list[tuple
         text = text.strip()
 
         if text and len(text) > 50:
-            pages.append((page_num + 1, text))
+            pages.append((page_num + 1, text, current_heading))
 
     doc.close()
     return pages
@@ -220,7 +282,7 @@ def _is_substantive_paragraph(text: str) -> bool:
 
 
 def chunk_pages(
-    pages: list[tuple[int, str]],
+    pages: list[tuple[int, str]] | list[tuple[int, str, str]],
     source_file: str,
     chunk_size: int = 1500,
     chunk_overlap: int = 200,
@@ -228,16 +290,20 @@ def chunk_pages(
     """
     Chunk extracted pages into overlapping segments.
     chunk_size and chunk_overlap are in characters.
+    Pages can be (page_num, text) or (page_num, text, section_header).
     """
     chunks = []
-    segments = []
+    segments = []  # (page_num, para_text, section_header)
 
-    for page_num, text in pages:
+    for page in pages:
+        page_num = page[0]
+        text = page[1]
+        heading = page[2] if len(page) > 2 else ""
         paragraphs = text.split('\n\n')
         for para in paragraphs:
             para = para.strip()
             if _is_substantive_paragraph(para):
-                segments.append((page_num, para))
+                segments.append((page_num, para, heading))
 
     if not segments:
         return chunks
@@ -245,10 +311,13 @@ def chunk_pages(
     current_text = ""
     current_page_start = segments[0][0]
     current_page_end = current_page_start
+    current_heading = segments[0][2]
     chunk_idx = 0
     char_limit = chunk_size * 4  # Convert to chars
 
-    for page_num, para in segments:
+    for page_num, para, heading in segments:
+        if heading:
+            current_heading = heading
         test_text = current_text + "\n\n" + para if current_text else para
 
         if len(test_text) > char_limit and current_text:
@@ -258,6 +327,7 @@ def chunk_pages(
                 page_start=current_page_start,
                 page_end=current_page_end,
                 chunk_index=chunk_idx,
+                section_header=current_heading,
             ))
             chunk_idx += 1
 
@@ -276,6 +346,7 @@ def chunk_pages(
             page_start=current_page_start,
             page_end=current_page_end,
             chunk_index=chunk_idx,
+            section_header=current_heading,
         ))
 
     return chunks
@@ -390,30 +461,37 @@ def extract_docx_chunks(
     chunk_size: int = 1500,
     chunk_overlap: int = 200,
 ) -> list[Chunk]:
-    """Extract content from DOCX and chunk it using python-docx."""
+    """Extract content from DOCX with heading detection via paragraph styles."""
     from docx import Document as DocxDocument
     filename = os.path.basename(docx_path)
     doc = DocxDocument(docx_path)
 
-    pages = []
+    pages = []  # (page_num, text, heading)
     current_page = 1
     current_parts = []
+    current_heading = ""
     char_count = 0
 
     for para in doc.paragraphs:
         text = para.text.strip()
         if not text:
             continue
+
+        # Detect headings from Word styles (Heading 1, Heading 2, etc.)
+        style_name = para.style.name if para.style else ""
+        if style_name.startswith("Heading"):
+            current_heading = text
+
         current_parts.append(text)
         char_count += len(text)
         if char_count >= 2400:  # ~1 page
-            pages.append((current_page, "\n\n".join(current_parts)))
+            pages.append((current_page, "\n\n".join(current_parts), current_heading))
             current_page += 1
             current_parts = []
             char_count = 0
 
     if current_parts:
-        pages.append((current_page, "\n\n".join(current_parts)))
+        pages.append((current_page, "\n\n".join(current_parts), current_heading))
 
     return chunk_pages(pages, filename, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
@@ -454,8 +532,35 @@ def extract_text_chunks(
 
 def extract_full_text(pdf_path: str, strip_references: bool = True) -> str:
     """Extract cleaned text as a single string. For Gemini full-context path."""
-    pages = extract_pdf_text(pdf_path, strip_references=strip_references)
-    return "\n\n".join(text for _, text in pages)
+    pages = extract_pdf_text(pdf_path, strip_references=strip_references, detect_headings=False)
+    return "\n\n".join(text for _, text, *_ in pages)
+
+
+def classify_doc_type(filename: str, text_sample: str, label: str = "") -> str:
+    """Heuristic document type classification for retrieval biasing."""
+    fn = filename.lower()
+    lab = label.lower()
+
+    # User's own work
+    if any(k in lab for k in ("my paper", "min opgave", "draft", "udkast", "own")):
+        return "own_work"
+    if any(k in fn for k in ("draft", "udkast", "opgave", "assignment")):
+        return "own_work"
+
+    # Textbook detection
+    if "chapter" in fn or "kapitel" in fn:
+        return "textbook"
+
+    # Check text sample for article vs textbook vs case signals
+    sample = text_sample[:2000].lower()
+    if "abstract" in sample and ("doi" in sample or "et al" in sample):
+        return "article"
+    if "case study" in sample[:500] or "case" in fn:
+        return "case"
+    if any(w in sample for w in ("learning objectives", "key terms", "chapter summary")):
+        return "textbook"
+
+    return "article"  # Default
 
 
 def ingest_files(
@@ -495,10 +600,13 @@ def ingest_files(
             else:
                 continue
 
-            # Apply label to all chunks
-            if label:
-                for c in chunks:
+            # Classify document type and apply label
+            sample = chunks[0].text if chunks else ""
+            dtype = classify_doc_type(filename, sample, label)
+            for c in chunks:
+                if label:
                     c.label = label
+                c.doc_type = dtype
             all_chunks.extend(chunks)
 
         except Exception as e:
@@ -567,9 +675,13 @@ def ingest_directory(
             else:
                 continue
 
-            if label:
-                for c in chunks:
+            # Classify document type and apply label
+            sample = chunks[0].text if chunks else ""
+            dtype = classify_doc_type(filename, sample, label)
+            for c in chunks:
+                if label:
                     c.label = label
+                c.doc_type = dtype
             all_chunks.extend(chunks)
 
         except Exception as e:

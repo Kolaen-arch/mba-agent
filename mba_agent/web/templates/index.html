@@ -937,37 +937,50 @@ body {
 .override-pill.active-opus { border-color: var(--accent); color: var(--accent); }
 .override-pill.active-sonnet { border-color: var(--blue); color: var(--blue); }
 .override-pill.active-gemini { border-color: var(--green); color: var(--green); }
+.override-pill.active-gpt { border-color: #10a37f; color: #10a37f; }
+.override-pill.active-search { border-color: #e89b3e; color: #e89b3e; }
 
 
 /* ═══════════════════════════════════════════════════════
-   DOCUMENT PANEL
+   DOCUMENT PANEL — Split View Layout
+   When doc is open: doc = 65% center, chat = 35% right
    ═══════════════════════════════════════════════════════ */
+/* ── Doc panel: two modes ──
+   Default (no doc open):  width 0, hidden
+   Doc open:               takes left half of main area via CSS grid
+*/
 .doc-panel {
   width: 0;
+  min-width: 0;
   overflow: hidden;
   background: var(--bg-paper);
-  border-left: 1px solid var(--border-light);
-  transition: width .25s ease;
+  border-right: 1px solid var(--border-light);
+  transition: width .3s ease, min-width .3s ease;
   display: flex;
   flex-direction: column;
 }
 .doc-panel.is-open {
-  width: var(--doc-panel-w);
-  min-width: var(--doc-panel-w);
+  width: clamp(480px, 50vw, 860px);
+  min-width: 480px;
+  overflow: visible;
+  flex-shrink: 0;
 }
+
 .doc-panel-header {
-  padding: 14px 16px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--border-light);
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 .doc-panel-header h3 {
-  font-size: 13px;
+  font-family: var(--font-serif);
+  font-size: 15px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text);
 }
 .close-btn {
   background: none;
@@ -980,23 +993,45 @@ body {
 }
 .close-btn:hover { color: var(--text); }
 
+.draft-upload-zone {
+  margin: 10px 20px;
+  padding: 14px;
+  border: 2px dashed var(--border-light);
+  border-radius: var(--r-sm);
+  text-align: center;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  transition: border-color 0.2s, color 0.2s;
+}
+.draft-upload-zone:hover, .draft-upload-zone.drag-over {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .doc-file-list {
-  padding: 8px 12px;
+  padding: 6px 20px;
   border-bottom: 1px solid var(--border-light);
-  max-height: 160px;
+  max-height: 120px;
   overflow-y: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .doc-file-item {
-  padding: 7px 10px;
-  border-radius: var(--r-sm);
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
   cursor: pointer;
   font-size: 12px;
-  display: flex;
-  justify-content: space-between;
+  font-family: var(--font-ui);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border-light);
   transition: var(--ease);
 }
-.doc-file-item:hover { background: var(--bg-sidebar-hover); }
-.doc-file-item.active { background: var(--bg-sidebar-active); font-weight: 500; }
+.doc-file-item:hover { background: var(--bg-sidebar-hover); border-color: var(--border-focus); }
+.doc-file-item.active { background: var(--bg-sidebar-active); border-color: var(--accent-soft); font-weight: 500; }
 .doc-file-item .file-info {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -1006,17 +1041,37 @@ body {
 .doc-body {
   flex: 1;
   overflow-y: auto;
-  padding: 16px;
+  padding: 28px 36px;
   font-family: var(--font-serif);
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: 15px;
+  line-height: 1.9;
+  color: var(--text);
+  max-width: 780px;
+  margin: 0 auto;
+}
+.doc-body h1, .doc-body h2, .doc-body h3, .doc-body h4 {
+  font-family: var(--font-serif);
+  color: var(--text);
+  margin: 1.6em 0 0.6em;
+  line-height: 1.3;
+}
+.doc-body h1 { font-size: 22px; font-weight: 600; }
+.doc-body h2 { font-size: 18px; font-weight: 600; }
+.doc-body h3 { font-size: 16px; font-weight: 500; font-style: italic; }
+.doc-body p { margin-bottom: 0.8em; text-align: justify; }
+.doc-body blockquote {
+  border-left: 3px solid var(--accent-soft);
+  padding-left: 16px;
+  margin: 1em 0;
   color: var(--text-secondary);
+  font-style: italic;
 }
 
 .doc-actions {
-  padding: 10px 12px;
+  padding: 10px 20px;
   border-top: 1px solid var(--border-light);
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 .doc-action-btn {
@@ -1069,6 +1124,7 @@ body {
   left: 50%;
   transform: translateX(-50%);
   z-index: 1000;
+  pointer-events: none;
 }
 .toast {
   padding: 8px 18px;
@@ -1080,6 +1136,7 @@ body {
   transform: translateY(8px);
   transition: all .2s ease;
   white-space: nowrap;
+  pointer-events: none;
 }
 .toast.is-visible { opacity: 1; transform: translateY(0); }
 
@@ -1246,6 +1303,48 @@ body {
   </div>
 </aside>
 
+<!-- ═══ Document Panel (between sidebar and chat) ═══ -->
+<aside class="doc-panel" id="dPan">
+  <div class="doc-panel-header">
+    <h3 id="dTit">Documents</h3>
+    <button class="close-btn" onclick="togDoc()">&times;</button>
+  </div>
+  <div class="draft-upload-zone" id="draftDrop" onclick="document.getElementById('draftFiles').click()">
+    <span>Drop .docx here or click to upload draft</span>
+    <input type="file" id="draftFiles" accept=".docx" multiple style="display:none" onchange="handleDraftUpload(this.files)">
+  </div>
+  <div class="doc-file-list" id="dFL"></div>
+  <div style="position:relative;flex:1;overflow:hidden;display:flex;flex-direction:column">
+    <div class="doc-body" id="dBd">
+      <p style="color:var(--text-muted);text-align:center;margin-top:40px">Select a document above</p>
+    </div>
+    <div class="sel-menu" id="selMenu">
+      <button class="sel-menu-btn" onclick="selAction('review')">Review</button>
+      <button class="sel-menu-btn" onclick="selAction('draft')">Improve</button>
+      <button class="sel-menu-btn" onclick="selAction('cite')">Find Citation</button>
+    </div>
+  </div>
+  <div class="diff-actions" id="diffActions">
+    <button class="doc-action-btn accept" onclick="acceptDiff()">Accept Draft</button>
+    <button class="doc-action-btn reject" onclick="rejectDiff()">Reject</button>
+  </div>
+  <div class="template-actions" id="tplActions">
+    <button class="quick-action" onclick="applyTpl('draft_section')">Draft</button>
+    <button class="quick-action" onclick="applyTpl('review_section')">Review</button>
+    <button class="quick-action" onclick="applyTpl('consistency_check')">Consistency</button>
+    <button class="quick-action" onclick="applyTpl('transition_bridge')">Transition</button>
+  </div>
+  <div class="doc-actions">
+    <button class="doc-action-btn" onclick="sendForReview()">Review</button>
+    <button class="doc-action-btn" onclick="syncDoc()">Sync</button>
+    <button class="doc-action-btn" onclick="runAutoSync()">Auto-sync</button>
+    <button class="doc-action-btn" onclick="redThreadAudit()">Red Thread</button>
+    <button class="doc-action-btn" onclick="citationReport()">Citations</button>
+    <button class="doc-action-btn" onclick="showBudget()">Budget</button>
+    <button class="doc-action-btn" onclick="exportLatex()">LaTeX</button>
+  </div>
+</aside>
+
 <!-- ═══ Main ═══ -->
 <main class="main">
   <div class="toolbar">
@@ -1299,9 +1398,10 @@ body {
           <div class="override-group">
             <span class="override-label">Model</span>
             <button class="override-pill active" data-ov="model" data-v="" onclick="setOv('model',this)">Auto</button>
+            <button class="override-pill" data-ov="model" data-v="openai/gpt-5.4" onclick="setOv('model',this)">GPT-5.4</button>
+            <button class="override-pill" data-ov="model" data-v="gemini-3.1-pro-preview" onclick="setOv('model',this)">Gemini</button>
             <button class="override-pill" data-ov="model" data-v="claude-opus-4-6" onclick="setOv('model',this)">Opus</button>
             <button class="override-pill" data-ov="model" data-v="claude-sonnet-4-5-20250929" onclick="setOv('model',this)">Sonnet</button>
-            <button class="override-pill" data-ov="model" data-v="gemini-3.1-pro-preview" onclick="setOv('model',this)">Gemini</button>
           </div>
           <div class="override-group">
             <span class="override-label">Think</span>
@@ -1309,47 +1409,16 @@ body {
             <button class="override-pill" data-ov="think" data-v="10000" onclick="setOv('think',this)">On</button>
             <button class="override-pill" data-ov="think" data-v="0" onclick="setOv('think',this)">Off</button>
           </div>
+          <div class="override-group">
+            <span class="override-label">Web</span>
+            <button class="override-pill active" data-ov="search" data-v="" onclick="setOv('search',this)">Off</button>
+            <button class="override-pill" data-ov="search" data-v="1" onclick="setOv('search',this)">On</button>
+          </div>
         </div>
       </div>
     </div>
   </div>
 </main>
-
-<!-- ═══ Document Panel ═══ -->
-<aside class="doc-panel" id="dPan">
-  <div class="doc-panel-header">
-    <h3 id="dTit">Documents</h3>
-    <button class="close-btn" onclick="togDoc()">&times;</button>
-  </div>
-  <div class="doc-file-list" id="dFL"></div>
-  <div class="doc-body" id="dBd" style="position:relative">
-    <p style="color:var(--text-muted);text-align:center;margin-top:40px">Select a document above</p>
-    <div class="sel-menu" id="selMenu">
-      <button class="sel-menu-btn" onclick="selAction('review')">Review</button>
-      <button class="sel-menu-btn" onclick="selAction('draft')">Improve</button>
-      <button class="sel-menu-btn" onclick="selAction('cite')">Find Citation</button>
-    </div>
-  </div>
-  <div class="diff-actions" id="diffActions">
-    <button class="doc-action-btn accept" onclick="acceptDiff()">Accept Draft</button>
-    <button class="doc-action-btn reject" onclick="rejectDiff()">Reject</button>
-  </div>
-  <div class="template-actions" id="tplActions">
-    <button class="quick-action" onclick="applyTpl('draft_section')">Draft</button>
-    <button class="quick-action" onclick="applyTpl('review_section')">Review</button>
-    <button class="quick-action" onclick="applyTpl('consistency_check')">Consistency</button>
-    <button class="quick-action" onclick="applyTpl('transition_bridge')">Transition</button>
-  </div>
-  <div class="doc-actions">
-    <button class="doc-action-btn" onclick="sendForReview()">Review</button>
-    <button class="doc-action-btn" onclick="syncDoc()">Sync</button>
-    <button class="doc-action-btn" onclick="runAutoSync()">Auto-sync</button>
-    <button class="doc-action-btn" onclick="redThreadAudit()">Red Thread</button>
-    <button class="doc-action-btn" onclick="citationReport()">Citations</button>
-    <button class="doc-action-btn" onclick="showBudget()">Budget</button>
-    <button class="doc-action-btn" onclick="exportLatex()">LaTeX</button>
-  </div>
-</aside>
 
 <!-- ═══ Scaffold Modal ═══ -->
 <div class="modal-overlay" id="scaffoldModal">
@@ -1409,7 +1478,7 @@ let S = {
   ses: null, mode: 'chat', loading: false, dpOpen: false,
   dPath: '', dData: null, lastResp: '', sessions: [],
   secId: '', structure: null, streamEl: null, streamText: '',
-  modelInfo: null, ovModel: '', ovThink: '', abortCtrl: null
+  modelInfo: null, ovModel: '', ovThink: '', ovSearch: '', abortCtrl: null
 };
 
 
@@ -1419,14 +1488,17 @@ let S = {
 function setOv(group, btn) {
   const v = btn.dataset.v;
   if (group === 'model') S.ovModel = v;
+  else if (group === 'search') S.ovSearch = v;
   else S.ovThink = v;
   document.querySelectorAll(`.override-pill[data-ov="${group}"]`).forEach(b => {
-    b.classList.remove('active', 'active-opus', 'active-sonnet');
+    b.classList.remove('active', 'active-opus', 'active-sonnet', 'active-gemini', 'active-gpt', 'active-search');
   });
   btn.classList.add('active');
   if (group === 'model' && v.includes('opus')) btn.classList.add('active-opus');
   if (group === 'model' && v.includes('sonnet')) btn.classList.add('active-sonnet');
   if (group === 'model' && v.includes('gemini')) btn.classList.add('active-gemini');
+  if (group === 'model' && v.includes('gpt')) btn.classList.add('active-gpt');
+  if (group === 'search' && v === '1') btn.classList.add('active-search');
 }
 
 
@@ -1530,6 +1602,77 @@ async function handleSrcUpload(files) {
     prog.classList.remove('active');
   }
 }
+
+/* ═══ Draft Upload ═══ */
+async function handleDraftUpload(files) {
+  if (!files.length) return;
+  const zone = document.getElementById('draftDrop');
+  zone.innerHTML = '<span>Uploading...</span>';
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  try {
+    const res = await fetch('/api/documents/upload', { method: 'POST', body: fd });
+    if (!res.ok) {
+      const text = await res.text();
+      zone.innerHTML = `<span style="color:red">Error ${res.status}: ${text.slice(0,100)}</span>`;
+      return;
+    }
+    const data = await res.json();
+    if (data.ok) {
+      zone.innerHTML = `<span>${data.count} file(s) uploaded</span>`;
+      const draftInput = document.getElementById('draftFiles');
+      if (draftInput) draftInput.value = '';
+      await loadDL();
+
+      // Auto-open first uploaded file + auto-generate structure
+      if (data.files?.length && window._docPaths?.length) {
+        const uploadedPath = window._docPaths.find(p =>
+          p.toLowerCase().endsWith(data.files[0].toLowerCase())
+        );
+        if (uploadedPath) await openD(uploadedPath);
+      }
+
+      setTimeout(() => {
+        zone.innerHTML = '<span>Drop .docx here or click to upload draft</span>';
+      }, 2000);
+    } else {
+      zone.innerHTML = `<span style="color:red">${data.error || 'Unknown error'}</span>`;
+    }
+  } catch (e) {
+    zone.innerHTML = `<span style="color:red">Upload failed: ${e.message}</span>`;
+  }
+}
+
+async function autoGenerateStructure(docxPath) {
+  // Only auto-generate if no structure exists
+  if (S.structure?.sections?.length) return;
+  toast('Generating paper structure from headings...');
+  try {
+    const d = await api('/api/structure/generate-from-docx', {
+      method: 'POST',
+      body: JSON.stringify({ docx_path: docxPath })
+    });
+    if (d.ok) {
+      toast(`Structure created: ${d.section_count} sections`);
+      await loadStruct();
+    } else if (d.error) {
+      toast(d.error);
+    }
+  } catch (e) { /* silent — non-critical */ }
+}
+
+// Drag-and-drop for draft upload zone
+document.addEventListener('DOMContentLoaded', () => {
+  const dz = document.getElementById('draftDrop');
+  if (!dz) return;
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault();
+    dz.classList.remove('drag-over');
+    handleDraftUpload(e.dataTransfer.files);
+  });
+});
 
 async function delSrc(filename) {
   if (!confirm('Remove "' + filename + '" from sources?')) return;
@@ -1698,6 +1841,7 @@ function setMode(m, upd = true) {
     // Reset overrides to Auto
     S.ovModel = '';
     S.ovThink = '';
+    S.ovSearch = '';
     document.querySelectorAll('.override-pill').forEach(b => {
       b.classList.remove('active', 'active-opus', 'active-sonnet');
     });
@@ -1827,6 +1971,7 @@ async function send() {
     const pay = { session_id: S.ses?.id || null, message: m, mode: S.mode, section_id: S.secId };
     if (S.ovModel) pay.model_override = S.ovModel;
     if (S.ovThink !== '') pay.thinking_override = parseInt(S.ovThink);
+    if (S.ovSearch === '1') pay.web_search = true;
 
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
@@ -1933,12 +2078,14 @@ function sb() { const a = document.getElementById('cArea'); requestAnimationFram
 async function loadDL() {
   try {
     const docs = await api('/api/documents');
-    document.getElementById('dFL').innerHTML = docs.map(d =>
-      `<div class="doc-file-item" onclick="openD('${esc(d.path)}')" data-p="${esc(d.path)}">
+    document.getElementById('dFL').innerHTML = docs.map((d, i) =>
+      `<div class="doc-file-item" onclick="openD(window._docPaths[${i}])" data-p="${esc(d.path)}">
         <span>${esc(d.filename)}</span>
         <span class="file-info">~${d.page_estimate}p</span>
       </div>`
     ).join('') || '<div style="padding:10px;color:var(--text-muted);font-size:12px">No .docx files found</div>';
+    // Store paths in JS to avoid backslash escaping issues in HTML attributes
+    window._docPaths = docs.map(d => d.path);
   } catch (e) {}
 }
 
@@ -1954,11 +2101,11 @@ async function openD(path) {
     if (d.error) return toast('Error: ' + d.error);
     S.dPath = path;
     S.dData = d;
-    document.getElementById('dTit').textContent = path.split('/').pop();
+    document.getElementById('dTit').textContent = path.split(/[/\\]/).pop();
     const dBd = document.getElementById('dBd');
     const selMenuEl = document.getElementById('selMenu');
     dBd.innerHTML = rmd(d.full_text);
-    // Re-append selMenu — innerHTML destroyed it
+    // Re-append selMenu — innerHTML destroyed it (Bug #1 fix)
     if (selMenuEl) dBd.appendChild(selMenuEl);
     document.querySelectorAll('.doc-file-item').forEach(el =>
       el.classList.toggle('active', el.dataset.p === path)
@@ -1966,8 +2113,10 @@ async function openD(path) {
     if (!S.dpOpen) togDoc();
     toast(`${d.metadata.word_count.toLocaleString()} words`);
 
-    // Auto-sync structure if paper structure exists
-    if (S.structure?.sections?.length) {
+    // Auto-generate structure if none exists, OR auto-sync if it does
+    if (!S.structure?.sections?.length) {
+      await autoGenerateStructure(path);
+    } else {
       api('/api/structure/auto-sync', {
         method: 'POST',
         body: JSON.stringify({ docx_path: path, generate_summaries: false })

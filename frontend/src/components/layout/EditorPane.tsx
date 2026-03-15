@@ -140,8 +140,15 @@ export function EditorPane() {
   /* preview diff — called after draft completion */
   const handlePreviewDiff = useCallback(
     async (newText: string) => {
-      if (!currentPath || !sectionId) {
-        toast('Select a section and open a document first')
+      // Read sectionId fresh from store (may have been auto-set by the done event)
+      const effectiveSectionId = useAppStore.getState().sectionId
+      const effectivePath = useDocumentStore.getState().currentPath
+      if (!effectivePath) {
+        toast('Open a document first')
+        return
+      }
+      if (!effectiveSectionId) {
+        toast('Select a section or mention one in your message (e.g. "section 1.3")')
         return
       }
       try {
@@ -149,7 +156,7 @@ export function EditorPane() {
           '/api/documents/preview-diff',
           {
             method: 'POST',
-            body: JSON.stringify({ section_id: sectionId, new_text: newText, docx_path: currentPath }),
+            body: JSON.stringify({ section_id: effectiveSectionId, new_text: newText, docx_path: effectivePath }),
           }
         )
         setDiffHtml(d.diff_html)
@@ -160,14 +167,16 @@ export function EditorPane() {
         toast(e.message || 'Diff failed')
       }
     },
-    [currentPath, sectionId, setDiffMode, setPendingDraft]
+    [setDiffMode, setPendingDraft]
   )
 
   /* accept draft */
   const handleAcceptDraft = useCallback(async () => {
     const { pendingDraft, currentPath } = useDocumentStore.getState()
     const { sectionId } = useAppStore.getState()
-    if (!pendingDraft || !currentPath || !sectionId) return
+    if (!pendingDraft) { toast('No draft to accept'); return }
+    if (!currentPath) { toast('No document open'); return }
+    if (!sectionId) { toast('No section selected'); return }
 
     try {
       await api('/api/documents/accept-draft', {

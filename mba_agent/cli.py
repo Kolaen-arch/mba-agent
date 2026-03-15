@@ -30,11 +30,16 @@ def load_config() -> dict:
 def get_store(cfg: dict):
     """Initialize the vector store."""
     from .store import PaperStore
+    retrieval_cfg = cfg.get("retrieval", {})
     return PaperStore(
         persist_dir=cfg.get("chroma_persist_dir", "./.chroma_db"),
         embedding_model=cfg.get(
             "embedding_model",
             "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        ),
+        reranker_enabled=retrieval_cfg.get("reranker_enabled", False),
+        reranker_model=retrieval_cfg.get(
+            "reranker_model", "cross-encoder/ms-marco-MiniLM-L-6-v2"
         ),
     )
 
@@ -46,7 +51,22 @@ def get_agent(cfg: dict):
 
     backends = {}
 
-    # Claude backends
+    # OpenRouter backends (preferred — access to GPT-5.4, Claude, DeepSeek, etc.)
+    or_key = cfg.get("openrouter_api_key", "")
+    if or_key:
+        from .openrouter_backend import OpenRouterBackend
+        # Register all OpenRouter models referenced in model_routing
+        or_models = set()
+        for mode_model in (cfg.get("model_routing") or {}).values():
+            if "/" in mode_model:  # OpenRouter models have provider/model format
+                or_models.add(mode_model)
+        default_model = cfg.get("model", "")
+        if "/" in default_model:
+            or_models.add(default_model)
+        for model_id in or_models:
+            backends[model_id] = OpenRouterBackend(or_key, model_id)
+
+    # Claude backends (direct Anthropic API)
     api_key = cfg.get("anthropic_api_key", "")
     if api_key and not api_key.startswith("sk-ant-your"):
         backends["claude-opus-4-6"] = ClaudeBackend(api_key, "claude-opus-4-6")
@@ -65,7 +85,7 @@ def get_agent(cfg: dict):
             pass
 
     if not backends:
-        console.print("[red]Error: No LLM backends configured. Set anthropic_api_key or gemini_api_key in config.yaml[/red]")
+        console.print("[red]Error: No LLM backends configured. Set openrouter_api_key, anthropic_api_key, or gemini_api_key in config.yaml[/red]")
         sys.exit(1)
 
     return MBAAgent(

@@ -44,6 +44,12 @@ try:
 except ImportError:
     HAS_GEMINI = False
 
+try:
+    from ..openrouter_backend import OpenRouterBackend
+    HAS_OPENROUTER = True
+except ImportError:
+    HAS_OPENROUTER = False
+
 
 def load_config() -> dict:
     config_path = Path("config.yaml")
@@ -89,6 +95,20 @@ def create_app() -> Flask:
         gemini_model = cfg.get("gemini_model", "gemini-3.1-pro-preview")
         gemini_search = cfg.get("gemini_search", True)
         backends[gemini_model] = GeminiBackend(gemini_key, gemini_model, search=gemini_search)
+
+    # OpenRouter backend — handles openai/*, meta-llama/*, etc.
+    openrouter_key = cfg.get("openrouter_api_key", "")
+    if openrouter_key and HAS_OPENROUTER:
+        # Register backends for all OpenRouter models found in model_routing
+        or_models = set()
+        for m in (model_map or {}).values():
+            if "/" in m and not m.startswith("claude") and not m.startswith("gemini"):
+                or_models.add(m)
+        default_m = cfg.get("model", "")
+        if "/" in default_m and not default_m.startswith("claude") and not default_m.startswith("gemini"):
+            or_models.add(default_m)
+        for or_model in or_models:
+            backends[or_model] = OpenRouterBackend(openrouter_key, or_model)
 
     agent = MBAAgent(
         backends=backends,
@@ -325,6 +345,72 @@ def create_app() -> Flask:
 
         return "\n".join(parts)
 
+    # ── Helper: auto-detect section from user message ──
+
+    def _detect_section_from_message(message, ps):
+        """
+        Parse the user's message for section references like:
+        'section 1.3', 'chapter 2', 'the introduction', '2.1 Experience Economy', etc.
+        Returns the best-matching section_id or ''.
+        """
+        import re
+        if not ps or not ps.sections:
+            return ""
+
+        msg_lower = message.lower().strip()
+
+        # Pattern 1: explicit section number like "section 1.3", "section 2",
+        # "afsnit 1.3" (Danish), "kapitel 2"
+        num_match = re.search(
+            r'(?:section|sect\.?|afsnit|kapitel|chapter|ch\.?)\s*(\d+(?:\.\d+)*)',
+            msg_lower,
+        )
+        if num_match:
+            num = num_match.group(1)
+            # Try exact match on section id
+            for s in ps.sections:
+                if s.id == num or s.id.lstrip("0") == num:
+                    return s.id
+            # Try matching section title starting with the number
+            for s in ps.sections:
+                if s.title.lower().startswith(num + " ") or s.title.lower().startswith(num + "."):
+                    return s.id
+
+        # Pattern 2: bare number reference like "in 1.3" or "into 1.3" or "merge into 2.1"
+        bare_match = re.search(r'(?:in|into|to|for)\s+(\d+\.\d+(?:\.\d+)*)', msg_lower)
+        if bare_match:
+            num = bare_match.group(1)
+            for s in ps.sections:
+                if s.id == num:
+                    return s.id
+
+        # Pattern 3: section name keywords
+        name_keywords = {
+            "introduction": ["introduction", "intro", "indledning"],
+            "theory": ["theoretical framework", "literature review", "theory", "teori", "litteratur"],
+            "methodology": ["methodology", "method", "metode", "design science"],
+            "findings": ["findings", "analysis", "analyse", "resultater"],
+            "discussion": ["discussion", "diskussion"],
+            "conclusion": ["conclusion", "konklusion"],
+        }
+        for _sec_type, keywords in name_keywords.items():
+            for kw in keywords:
+                if kw in msg_lower:
+                    # Find section whose title contains this keyword
+                    for s in ps.sections:
+                        if kw in s.title.lower():
+                            return s.id
+
+        # Pattern 4: try fuzzy match — check if any section title words appear
+        for s in ps.sections:
+            title_words = [w.lower() for w in s.title.split() if len(w) > 3]
+            if title_words:
+                matches = sum(1 for w in title_words if w in msg_lower)
+                if matches >= 2 or (len(title_words) == 1 and matches == 1):
+                    return s.id
+
+        return ""
+
     # ── Helper: build context for a mode ──
 
     def _build_context(message, mode, data):
@@ -339,6 +425,10 @@ def create_app() -> Flask:
 
         ps = load_structure()
         section_id = data.get("section_id", "")
+
+        # Auto-detect section from message if none provided by the frontend
+        if not section_id and mode in ("draft", "review", "chat", "transition", "consistency"):
+            section_id = _detect_section_from_message(message, ps)
 
         # Get key_sources for source-biased retrieval
         sec = get_section(ps, section_id) if section_id else None
@@ -482,7 +572,7 @@ def create_app() -> Flask:
                             except Exception:
                                 pass
 
-                        yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'sources': source_files[:10], 'citations': found_cites[:20], 'cost_usd': cost_usd, 'usage': usage})}\n\n"
+                        yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'sources': source_files[:10], 'citations': found_cites[:20], 'cost_usd': cost_usd, 'usage': usage, 'section_id': section_id})}\n\n"
 
             except Exception as e:
                 error_msg = _sanitize_error(e)
@@ -572,6 +662,7 @@ def create_app() -> Flask:
         if mode == "draft":
             system = prompts.DRAFT_SYSTEM
             # Phase 11: inject section-type prompt fragment
+            sec = None
             if section_id:
                 sec = get_section(ps, section_id)
                 if sec:
@@ -579,7 +670,28 @@ def create_app() -> Flask:
                     fragment = prompts.SECTION_FRAGMENTS.get(sec_type, "")
                     if fragment:
                         system = system + "\n" + fragment
-            return system, message, False
+            # Build user message: document FIRST, then section context, then instruction LAST
+            # (LLMs follow the last instruction most reliably)
+            parts = []
+            doc_content = data.get("doc_content", "")
+            if doc_content:
+                parts.append(f"<existing_draft>\n{doc_content[:60000]}\n</existing_draft>")
+            if sec:
+                parts.append(f"<target_section id=\"{section_id}\" title=\"{sec.title}\" "
+                             f"target_words=\"{sec.target_words}\" current_words=\"{sec.word_count}\" "
+                             f"status=\"{sec.status}\" />"
+                )
+            parts.append(f"\n{message}")
+            if doc_content:
+                parts.append(
+                    "\n[MANDATORY: You have the student's document above. The document content, "
+                    "combined with the retrieved source chunks in your context, is ALL the information "
+                    "you need. Write the requested content NOW. Do NOT ask for the topic, research "
+                    "question, or any other details — extract them from the document. "
+                    "Do NOT say 'I need' or 'send me' or 'please provide'. "
+                    "Begin your response with the section heading and then write academic prose.]"
+                )
+            return system, "\n".join(parts), False
         elif mode == "synthesize":
             return prompts.SYNTHESIZE_SYSTEM, f"Synthesize the literature on: {message}", False
         elif mode == "review":
@@ -645,7 +757,25 @@ def create_app() -> Flask:
                     agent.conversation_history = agent.conversation_history[-40:]
             else:
                 agent.conversation_history = []
-            return prompts.CHAT_SYSTEM, message, True
+
+            # Include section context + document content
+            # Document FIRST, instruction LAST for best model compliance
+            parts = []
+            doc_content = data.get("doc_content", "")
+            if doc_content:
+                parts.append(f"<current_document>\n{doc_content[:60000]}\n</current_document>")
+            if section_id:
+                sec = get_section(ps, section_id)
+                if sec:
+                    parts.append(f"<target_section id=\"{section_id}\" title=\"{sec.title}\" />")
+            parts.append(f"\n{message}")
+            if doc_content:
+                parts.append(
+                    "\n[You have the student's full document above. If asked to write, merge, or "
+                    "expand content — do it immediately using the document as context. "
+                    "Do NOT ask the user to paste content or provide more details.]"
+                )
+            return prompts.CHAT_SYSTEM, "\n".join(parts), True
 
     # ── Document API ──
 

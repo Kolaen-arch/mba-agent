@@ -107,17 +107,14 @@ export default function Editor({
     }
   }, [editor, content, diffHtml])
 
-  // Render diff HTML when in diff mode
+  // In diff mode, hide the editor and show the diff overlay
   useEffect(() => {
-    if (!editor || !diffHtml) return
-    editor.setEditable(false)
-    editor.commands.setContent(diffHtml)
-  }, [editor, diffHtml])
-
-  // Restore editability when leaving diff mode
-  useEffect(() => {
-    if (!editor || diffHtml) return
-    editor.setEditable(editable)
+    if (!editor) return
+    if (diffHtml) {
+      editor.setEditable(false)
+    } else {
+      editor.setEditable(editable)
+    }
   }, [editor, diffHtml, editable])
 
   // Close menu on click outside
@@ -159,7 +156,21 @@ export default function Editor({
             border border-border-light
           "
         >
-          <EditorContent editor={editor} />
+          {diffHtml ? (
+            <div
+              className="
+                p-8 font-serif text-sm leading-relaxed text-text-primary
+                [&_del]:bg-red/15 [&_del]:text-red [&_del]:line-through [&_del]:px-0.5 [&_del]:rounded
+                [&_ins]:bg-green/15 [&_ins]:text-green [&_ins]:no-underline [&_ins]:px-0.5 [&_ins]:rounded
+                [&_p]:my-2 [&_h1]:text-lg [&_h1]:font-bold [&_h1]:mt-4 [&_h1]:mb-2
+                [&_h2]:text-base [&_h2]:font-bold [&_h2]:mt-3 [&_h2]:mb-2
+                [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:mt-2 [&_h3]:mb-1
+              "
+              dangerouslySetInnerHTML={{ __html: diffHtml }}
+            />
+          ) : (
+            <EditorContent editor={editor} />
+          )}
         </div>
 
         {/* Floating selection menu */}

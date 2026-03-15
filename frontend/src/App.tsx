@@ -14,6 +14,7 @@ export default function App() {
   const setSessions = useAppStore((s) => s.setSessions)
   const setModelInfo = useAppStore((s) => s.setModelInfo)
   const setFiles = useDocumentStore((s) => s.setFiles)
+  const setSources = useDocumentStore((s) => s.setSources)
   const setStructure = useDocumentStore((s) => s.setStructure)
 
   // Global keyboard shortcuts
@@ -21,18 +22,19 @@ export default function App() {
 
   useEffect(() => {
     async function bootstrap() {
-      const [status, docs, sessions, structure] = await Promise.allSettled([
+      const [status, docs, sessions, structure, sources] = await Promise.allSettled([
         api<{ models?: Record<string, string> }>('/api/status'),
-        api<{ files: any[] }>('/api/documents'),
+        api<any[]>('/api/documents'),
         api<{ sessions: any[] }>('/api/sessions'),
         api<any>('/api/structure'),
+        api<any[]>('/api/sources/detailed'),
       ])
 
       if (status.status === 'fulfilled' && status.value.models) {
         setModelInfo(status.value.models)
       }
       if (docs.status === 'fulfilled') {
-        setFiles((docs.value as any).files ?? [])
+        setFiles(Array.isArray(docs.value) ? docs.value : [])
       }
       if (sessions.status === 'fulfilled') {
         setSessions((sessions.value as any).sessions ?? [])
@@ -40,10 +42,13 @@ export default function App() {
       if (structure.status === 'fulfilled') {
         setStructure((structure.value as any) ?? null)
       }
+      if (sources.status === 'fulfilled') {
+        setSources(Array.isArray(sources.value) ? sources.value : [])
+      }
     }
 
     bootstrap()
-  }, [setSessions, setModelInfo, setFiles, setStructure])
+  }, [setSessions, setModelInfo, setFiles, setSources, setStructure])
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-bg">

@@ -4,6 +4,7 @@ Handles storage, retrieval, and similarity search across the paper library.
 """
 
 import json
+import logging
 import re
 from pathlib import Path
 
@@ -19,10 +20,42 @@ except ImportError:
 
 from .ingest import Chunk
 
+log = logging.getLogger(__name__)
+
 
 def _tokenize(text: str) -> list[str]:
     """Simple whitespace + punctuation tokenizer for BM25."""
     return re.findall(r'\w+', text.lower())
+
+
+class Reranker:
+    """Cross-encoder reranker for fine-grained query-chunk relevance scoring.
+    Lazy-loaded: model only downloaded/loaded on first use."""
+
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        self._model_name = model_name
+        self._model = None
+
+    def _load(self):
+        if self._model is not None:
+            return
+        from sentence_transformers import CrossEncoder
+        log.info("Loading reranker model: %s", self._model_name)
+        self._model = CrossEncoder(self._model_name, device="cpu")
+
+    def rerank(self, query: str, results: list[dict], top_k: int = 15) -> list[dict]:
+        """Score (query, chunk) pairs and return top_k by cross-encoder score."""
+        if not results:
+            return results
+        self._load()
+
+        pairs = [(query, r["text"]) for r in results]
+        scores = self._model.predict(pairs)
+        for r, s in zip(results, scores):
+            r["rerank_score"] = float(s)
+
+        reranked = sorted(results, key=lambda x: x["rerank_score"], reverse=True)
+        return reranked[:top_k]
 
 
 class PaperStore:
@@ -32,6 +65,8 @@ class PaperStore:
         self,
         persist_dir: str = "./.chroma_db",
         embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        reranker_enabled: bool = False,
+        reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
     ):
         self.persist_dir = persist_dir
         # Workaround: ROCm PyTorch on Windows lacks torch.distributed —
@@ -60,19 +95,38 @@ class PaperStore:
         self._bm25_index: "BM25Okapi | None" = None
         self._bm25_corpus: list[dict] = []  # [{id, text, metadata}]
 
+        # Cross-encoder reranker (lazy-loaded on first query)
+        self.reranker: Reranker | None = Reranker(reranker_model) if reranker_enabled else None
+
     @property
     def count(self) -> int:
         return self.collection.count()
 
     def add_chunks(self, chunks: list[Chunk], batch_size: int = 100) -> None:
-        """Embed and store chunks in batches."""
+        """Embed and store chunks in batches.
+        Embeds contextual headers (document + section) for better retrieval.
+        Deduplicates by ID within each batch (same filename in multiple dirs)."""
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i + batch_size]
-            texts = [c.text for c in batch]
+
+            # Deduplicate within batch by ID (same file in different subdirs)
+            seen_ids = set()
+            deduped = []
+            for c in batch:
+                cid = f"{c.source_file}_{c.chunk_index}"
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    deduped.append(c)
+            batch = deduped
+
+            # Embed the contextual header version for better retrieval
+            embed_texts = [c.embedding_text for c in batch]
+            # Store the raw text as the document (for display/context building)
+            store_texts = [c.text for c in batch]
             ids = [f"{c.source_file}_{c.chunk_index}" for c in batch]
 
-            # Generate embeddings
-            embeddings = self.embedder.encode(texts, show_progress_bar=False).tolist()
+            # Generate embeddings from contextual text
+            embeddings = self.embedder.encode(embed_texts, show_progress_bar=False).tolist()
 
             # Metadata for each chunk
             metadatas = [
@@ -83,6 +137,8 @@ class PaperStore:
                     "chunk_index": c.chunk_index,
                     "source_tag": c.source_tag,
                     "label": c.label or "",
+                    "section_header": c.section_header or "",
+                    "doc_type": c.doc_type or "",
                 }
                 for c in batch
             ]
@@ -91,7 +147,7 @@ class PaperStore:
             self.collection.upsert(
                 ids=ids,
                 embeddings=embeddings,
-                documents=texts,
+                documents=store_texts,
                 metadatas=metadatas,
             )
             print(f"  Stored chunks {i+1}-{min(i+batch_size, len(chunks))} / {len(chunks)}")
@@ -134,6 +190,8 @@ class PaperStore:
                     "page_start": meta["page_start"],
                     "page_end": meta["page_end"],
                     "source_tag": meta["source_tag"],
+                    "chunk_index": meta.get("chunk_index", 0),
+                    "doc_type": meta.get("doc_type", ""),
                     "distance": dist,
                 })
 
@@ -148,13 +206,23 @@ class PaperStore:
     ) -> str:
         """
         Search and build a formatted context string for the LLM.
-        Uses hybrid search (semantic + BM25) when available.
+        Pipeline: hybrid search (retrieve 50) → optional rerank (top 15) → format.
         Deduplicates and sorts by relevance.
         """
-        if use_hybrid and HAS_BM25:
-            results = self.search_hybrid(query, n_results=n_results)
+        # With reranker: retrieve more, rerank to fewer high-quality results
+        if self.reranker:
+            retrieve_n = max(n_results * 2, 50)
         else:
-            results = self.search(query, n_results=n_results)
+            retrieve_n = n_results
+
+        if use_hybrid and HAS_BM25:
+            results = self.search_hybrid(query, n_results=retrieve_n)
+        else:
+            results = self.search(query, n_results=retrieve_n)
+
+        # Cross-encoder reranking for fine-grained relevance
+        if self.reranker and results:
+            results = self.reranker.rerank(query, results, top_k=n_results)
 
         context_parts = []
         total_chars = 0
@@ -194,75 +262,100 @@ class PaperStore:
 
         self._bm25_index = BM25Okapi(tokenized)
 
-    def search_hybrid(
-        self,
-        query: str,
-        n_results: int = 25,
-        alpha: float = 0.7,
-    ) -> list[dict]:
-        """
-        Hybrid search: alpha * semantic_score + (1-alpha) * bm25_score.
-        Falls back to pure semantic search if BM25 is unavailable.
-        """
-        # Semantic search
-        semantic_results = self.search(query, n_results=min(n_results * 2, 50))
+    def _bm25_search(self, query: str, n_results: int = 50) -> list[dict]:
+        """BM25 keyword search. Returns ranked results with metadata."""
+        if not HAS_BM25:
+            return []
 
-        if not HAS_BM25 or alpha >= 1.0:
-            return semantic_results[:n_results]
-
-        # Build BM25 index if needed
         if self._bm25_index is None:
             self._build_bm25_index()
 
         if not self._bm25_index or not self._bm25_corpus:
+            return []
+
+        query_tokens = _tokenize(query)
+        scores = self._bm25_index.get_scores(query_tokens)
+
+        # Rank by score descending
+        ranked_indices = sorted(
+            range(len(scores)), key=lambda i: scores[i], reverse=True
+        )[:n_results]
+
+        results = []
+        for rank, i in enumerate(ranked_indices):
+            if scores[i] <= 0:
+                break
+            entry = self._bm25_corpus[i]
+            meta = entry["metadata"]
+            results.append({
+                "text": entry["text"],
+                "source_file": meta["source_file"],
+                "page_start": meta.get("page_start", 0),
+                "page_end": meta.get("page_end", 0),
+                "source_tag": meta.get("source_tag", ""),
+                "doc_type": meta.get("doc_type", ""),
+                "chunk_index": meta.get("chunk_index", 0),
+                "bm25_score": float(scores[i]),
+                "bm25_rank": rank,
+                "_doc_id": entry["id"],
+            })
+
+        return results
+
+    def search_hybrid(
+        self,
+        query: str,
+        n_results: int = 25,
+        retrieve_depth: int = 50,
+    ) -> list[dict]:
+        """
+        Hybrid search using Reciprocal Rank Fusion (RRF).
+        Retrieves `retrieve_depth` from each system, fuses by rank position.
+        RRF score = sum(1 / (k + rank_i)) — normalization-free.
+        Falls back to pure semantic search if BM25 is unavailable.
+        """
+        k = 60  # RRF constant (Cormack et al. 2009)
+
+        # Retrieve from both systems
+        semantic_results = self.search(query, n_results=retrieve_depth)
+
+        if not HAS_BM25:
             return semantic_results[:n_results]
 
-        # BM25 search
-        query_tokens = _tokenize(query)
-        bm25_scores = self._bm25_index.get_scores(query_tokens)
+        bm25_results = self._bm25_search(query, n_results=retrieve_depth)
+        if not bm25_results:
+            return semantic_results[:n_results]
 
-        # Normalize BM25 scores to 0-1
-        max_bm25 = max(bm25_scores) if max(bm25_scores) > 0 else 1.0
-        bm25_map = {}
-        for i, entry in enumerate(self._bm25_corpus):
-            bm25_map[entry["id"]] = bm25_scores[i] / max_bm25
+        # Build RRF scores — keyed by doc_id
+        rrf_scores: dict[str, float] = {}
+        result_data: dict[str, dict] = {}
 
-        # Normalize semantic scores (distance → similarity, 0-1)
-        # ChromaDB cosine distance: 0 = identical, 2 = opposite
-        max_dist = max(r["distance"] for r in semantic_results) if semantic_results else 1.0
-        if max_dist == 0:
-            max_dist = 1.0
-
-        # Combine scores
-        combined = {}
-        for r in semantic_results:
+        # Score semantic results by rank position
+        for rank, r in enumerate(semantic_results):
             doc_id = f"{r['source_file']}_{r.get('chunk_index', 0)}"
-            semantic_score = 1.0 - (r["distance"] / max_dist)
-            bm25_score = bm25_map.get(doc_id, 0.0)
-            combined[doc_id] = {
-                **r,
-                "score": alpha * semantic_score + (1 - alpha) * bm25_score,
-            }
+            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + 1.0 / (k + rank)
+            if doc_id not in result_data:
+                result_data[doc_id] = r
 
-        # Also check top BM25 results that might not be in semantic results
-        top_bm25_indices = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)[:n_results]
-        for i in top_bm25_indices:
-            entry = self._bm25_corpus[i]
-            doc_id = entry["id"]
-            if doc_id not in combined:
-                combined[doc_id] = {
-                    "text": entry["text"],
-                    "source_file": entry["metadata"]["source_file"],
-                    "page_start": entry["metadata"].get("page_start", 0),
-                    "page_end": entry["metadata"].get("page_end", 0),
-                    "source_tag": entry["metadata"].get("source_tag", ""),
-                    "distance": 1.0,  # Unknown semantic distance
-                    "score": (1 - alpha) * (bm25_scores[i] / max_bm25),
-                }
+        # Score BM25 results by rank position
+        for rank, r in enumerate(bm25_results):
+            doc_id = r["_doc_id"]
+            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + 1.0 / (k + rank)
+            if doc_id not in result_data:
+                result_data[doc_id] = r
 
-        # Sort by combined score, return top n
-        ranked = sorted(combined.values(), key=lambda x: x["score"], reverse=True)
-        return ranked[:n_results]
+        # Merge: attach RRF score to each result
+        fused = []
+        for doc_id, score in rrf_scores.items():
+            entry = {**result_data[doc_id], "score": score}
+            entry.pop("_doc_id", None)
+            entry.pop("bm25_score", None)
+            entry.pop("bm25_rank", None)
+            fused.append(entry)
+
+        # Sort by RRF score descending
+        fused.sort(key=lambda x: x["score"], reverse=True)
+        return fused[:n_results]
 
     def list_sources(self) -> list[str]:
         """List all unique source files in the store. Cached after first call."""

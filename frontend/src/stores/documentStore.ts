@@ -4,8 +4,15 @@ import type { JSONContent } from '@tiptap/react'
 export interface DocFile {
   path: string
   filename: string
-  size: number
-  modified: string
+  relative_path: string
+  word_count: number
+  page_estimate: number
+}
+
+export interface SourceFile {
+  file: string
+  label: string
+  chunks: number
 }
 
 export interface DocData {
@@ -42,6 +49,7 @@ export interface PaperStructure {
 interface DocumentState {
   // Document
   files: DocFile[]
+  sources: SourceFile[]
   currentPath: string
   currentDoc: DocData | null
   editorContent: JSONContent | null
@@ -55,6 +63,7 @@ interface DocumentState {
 
   // Actions
   setFiles: (f: DocFile[]) => void
+  setSources: (s: SourceFile[]) => void
   setCurrentPath: (p: string) => void
   setCurrentDoc: (d: DocData | null) => void
   setEditorContent: (c: JSONContent | null) => void
@@ -65,6 +74,7 @@ interface DocumentState {
 
 export const useDocumentStore = create<DocumentState>((set) => ({
   files: [],
+  sources: [],
   currentPath: '',
   currentDoc: null,
   editorContent: null,
@@ -73,6 +83,7 @@ export const useDocumentStore = create<DocumentState>((set) => ({
   structure: null,
 
   setFiles: (files) => set({ files }),
+  setSources: (sources) => set({ sources }),
   setCurrentPath: (currentPath) => set({ currentPath }),
   setCurrentDoc: (currentDoc) => set({ currentDoc }),
   setEditorContent: (editorContent) => set({ editorContent }),

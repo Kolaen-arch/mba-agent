@@ -55,13 +55,13 @@ export function Sidebar() {
   const setSessions = useAppStore((s) => s.setSessions)
   const setMessages = useAppStore((s) => s.setMessages)
 
-  const files = useDocumentStore((s) => s.files)
+  const sources = useDocumentStore((s) => s.sources)
   const structure = useDocumentStore((s) => s.structure)
 
   const grouped = useMemo(() => groupSessions(sessions), [sessions])
 
   /* stats */
-  const totalChunks = files.reduce((n, f) => n + (f.size ?? 0), 0)
+  const totalChunks = sources.reduce((n, f) => n + (f.chunks ?? 0), 0)
 
   /* new chat */
   const handleNewChat = useCallback(async () => {
@@ -100,8 +100,8 @@ export function Sidebar() {
     }
     try {
       await apiUpload('/api/ingest', fd)
-      const docs = await api('/api/sources/detailed')
-      useDocumentStore.getState().setFiles(docs.files ?? [])
+      const docs = await api<any[]>('/api/sources/detailed')
+      useDocumentStore.getState().setSources(Array.isArray(docs) ? docs : [])
     } catch {
       /* silent */
     }
@@ -164,23 +164,23 @@ export function Sidebar() {
             {sourcesOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
             Sources
             <span className="ml-auto text-text-muted font-normal normal-case">
-              {files.length}
+              {sources.length}
             </span>
           </button>
 
           {sourcesOpen && (
             <div className="px-3 pb-2">
-              {files.map((f) => (
+              {sources.map((f) => (
                 <div
-                  key={f.path}
+                  key={f.file}
                   className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-text-secondary hover:bg-bg-sidebar-hover transition-colors cursor-default"
-                  title={f.path}
+                  title={f.file}
                 >
                   <FileText size={13} className="shrink-0 text-text-muted" />
-                  <span className="truncate flex-1">{f.filename}</span>
-                  {f.size > 0 && (
+                  <span className="truncate flex-1">{f.label || f.file}</span>
+                  {f.chunks > 0 && (
                     <span className="text-[10px] text-text-muted shrink-0">
-                      {f.size}
+                      {f.chunks}
                     </span>
                   )}
                 </div>
@@ -256,7 +256,7 @@ export function Sidebar() {
       <div className="flex items-center gap-3 px-4 py-2.5 border-t border-border text-[10px] text-text-muted">
         <span className="flex items-center gap-1">
           <BookOpen size={10} />
-          {files.length}
+          {sources.length}
         </span>
         <span className="flex items-center gap-1">
           <Hash size={10} />

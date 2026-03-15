@@ -20,16 +20,18 @@ except ImportError:
     HAS_GEMINI = False
     GeminiServerError = Exception  # Placeholder so except clause doesn't break
 
-FALLBACK_MODEL = "gemini-3.0-pro"
+FALLBACK_MODEL = "gemini-3-pro-preview"
 
 
 class GeminiBackend(LLMBackend):
     """Gemini backend using the google-genai SDK."""
 
-    def __init__(self, api_key: str, model: str = "gemini-3.1-pro-preview", search: bool = True):
+    def __init__(self, api_key: str, model: str = "gemini-3.1-pro-preview", search: bool = True, timeout: int = 60):
         if not HAS_GEMINI:
             raise ImportError("google-genai package not installed. Run: pip install google-genai")
-        self.client = genai.Client(api_key=api_key)
+        # Set HTTP timeout to prevent hanging on 503 (SDK defaults to infinite)
+        http_options = types.HttpOptions(timeout=timeout * 1000)  # milliseconds
+        self.client = genai.Client(api_key=api_key, http_options=http_options)
         self.model = model
         self.fallback_model = FALLBACK_MODEL if model != FALLBACK_MODEL else None
         self.search = search  # Enable Google Search grounding by default
@@ -62,8 +64,8 @@ class GeminiBackend(LLMBackend):
                     thinking_budget=thinking_budget,
                     include_thoughts=True,
                 )
-        elif "gemini-3" in active_model:
-            # Gemini 3.x: always enable thinking at high by default
+        elif "gemini-3" in active_model and thinking_budget != 0:
+            # Gemini 3.x: enable thinking by default, but respect explicit disable (budget=0)
             config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="high")
 
         # Google Search grounding

@@ -17,11 +17,19 @@ import {
   StopCircle,
   RefreshCw,
 } from 'lucide-react'
+import { marked } from 'marked'
 import { useAppStore, type Message } from '../../stores/appStore'
 import { useDocumentStore, type PaperSection } from '../../stores/documentStore'
 import { apiRaw, api } from '../../lib/api'
 import { MODES, type ModeId, MODEL_OPTIONS, THINK_OPTIONS } from '../../lib/constants'
 import { toast } from '../modals/Toast'
+
+// Configure marked for safe, compact output
+marked.setOptions({ breaks: true, gfm: true })
+
+function renderMarkdown(text: string): string {
+  return marked.parse(text, { async: false }) as string
+}
 
 /* ================================================================
    Structure tree (top half)
@@ -197,11 +205,20 @@ function ChatPanel() {
     useAppStore.getState().setAbortController(abortCtrl)
 
     try {
+      // Include editor content so the LLM can see the current document
+      const docStore = useDocumentStore.getState()
+      const editorText = docStore.currentDoc?.full_text || ''
+
       const payload: Record<string, any> = {
         message: text,
         mode,
         session_id: session?.id ?? null,
         section_id: sectionId || undefined,
+      }
+      // Attach current document content for modes that need it
+      if (editorText) {
+        payload.doc_content = editorText
+        if (docStore.currentPath) payload.doc_path = docStore.currentPath
       }
       if (modelOverride) payload.model_override = modelOverride
       if (thinkOverride) payload.thinking_override = parseInt(thinkOverride)
@@ -259,8 +276,19 @@ function ChatPanel() {
                     })
                   }
 
+                  // If backend detected a section from the message, auto-select it
+                  if (data.section_id && !useAppStore.getState().sectionId) {
+                    useAppStore.getState().setSectionId(data.section_id)
+                  }
+
                   // Auto-preview diff after draft completion
                   if (mode === 'draft' && fullText.trim()) {
+                    // Use backend-detected section_id if no section was pre-selected
+                    const effectiveSectionId = useAppStore.getState().sectionId || data.section_id
+                    if (effectiveSectionId) {
+                      // Ensure sectionId is set before calling previewDiff
+                      useAppStore.getState().setSectionId(effectiveSectionId)
+                    }
                     const previewDiff = (window as any).__previewDiff
                     if (typeof previewDiff === 'function') {
                       setTimeout(() => previewDiff(fullText), 300)
@@ -400,14 +428,69 @@ function ChatPanel() {
               }
             `}
           >
-            <div className="whitespace-pre-wrap break-words">{m.content}</div>
+            {m.role === 'assistant' ? (
+              <div
+                className="prose prose-xs prose-stone max-w-none break-words
+                  [&_h1]:text-sm [&_h1]:font-bold [&_h1]:mt-3 [&_h1]:mb-1
+                  [&_h2]:text-xs [&_h2]:font-bold [&_h2]:mt-2 [&_h2]:mb-1
+                  [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:mt-2 [&_h3]:mb-0.5
+                  [&_p]:my-1 [&_p]:text-xs [&_p]:leading-relaxed
+                  [&_ul]:my-1 [&_ul]:pl-4 [&_ul]:text-xs
+                  [&_ol]:my-1 [&_ol]:pl-4 [&_ol]:text-xs
+                  [&_li]:my-0.5
+                  [&_strong]:font-semibold
+                  [&_code]:bg-bg-code [&_code]:px-1 [&_code]:rounded [&_code]:text-[10px]
+                  [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-2 [&_blockquote]:italic [&_blockquote]:text-text-muted
+                "
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }}
+              />
+            ) : (
+              <div className="whitespace-pre-wrap break-words">{m.content}</div>
+            )}
+            {m.role === 'assistant' && m.content.length > 50 && (
+              <div className="flex items-center gap-2 mt-1.5 pt-1 border-t border-border-light">
+                <button
+                  onClick={() => {
+                    const previewDiff = (window as any).__previewDiff
+                    if (typeof previewDiff === 'function') {
+                      previewDiff(m.content)
+                    } else {
+                      toast('Open a document first')
+                    }
+                  }}
+                  className="text-[9px] text-accent hover:text-accent-hover transition-colors font-medium"
+                  title="Preview changes in the editor"
+                >
+                  ↳ Apply to editor
+                </button>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(m.content)
+                    toast('Copied!')
+                  }}
+                  className="text-[9px] text-text-muted hover:text-text-secondary transition-colors"
+                >
+                  Copy
+                </button>
+              </div>
+            )}
             {m.model && <div className="text-[9px] text-text-muted mt-1 text-right">{m.model}</div>}
           </div>
         ))}
 
         {loading && streamText && (
           <div className="text-xs leading-relaxed rounded-lg px-3 py-2 bg-bg-card border border-border-light mr-2">
-            <div className="whitespace-pre-wrap break-words">{streamText}</div>
+            <div
+              className="prose prose-xs prose-stone max-w-none break-words
+                [&_h1]:text-sm [&_h1]:font-bold [&_h1]:mt-3 [&_h1]:mb-1
+                [&_h2]:text-xs [&_h2]:font-bold [&_h2]:mt-2 [&_h2]:mb-1
+                [&_p]:my-1 [&_p]:text-xs [&_p]:leading-relaxed
+                [&_ul]:my-1 [&_ul]:pl-4 [&_ul]:text-xs
+                [&_ol]:my-1 [&_ol]:pl-4 [&_ol]:text-xs
+                [&_strong]:font-semibold
+              "
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(streamText) }}
+            />
           </div>
         )}
 
