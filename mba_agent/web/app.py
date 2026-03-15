@@ -201,7 +201,9 @@ def create_app() -> Flask:
         """Serve React build assets (JS, CSS)."""
         assets_dir = os.path.join(react_dist, "assets")
         if os.path.exists(os.path.join(assets_dir, filename)):
-            return send_from_directory(assets_dir, filename)
+            resp = send_from_directory(assets_dir, filename)
+            resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+            return resp
         return ("Not found", 404)
 
     # ── Session API ──

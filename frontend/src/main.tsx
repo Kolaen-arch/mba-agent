@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 
+;(window as any).__MBA_BUILD = '20260315a'
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
