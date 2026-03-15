@@ -1584,6 +1584,9 @@ def create_app() -> Flask:
                         sec_text = "\n\n".join(doc_sec["paragraphs"])
                         sec_words = sec_text.split()
                         matched.word_count = len(sec_words)
+                        # Sync title from docx heading (user may have renamed it)
+                        if heading != matched.title:
+                            matched.title = heading
                         matched.starts_with = " ".join(sec_words[:200]) if len(sec_words) > 200 else sec_text
                         matched.ends_with = " ".join(sec_words[-200:]) if len(sec_words) > 200 else sec_text
                         if matched.word_count == 0:

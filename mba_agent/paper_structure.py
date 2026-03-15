@@ -211,8 +211,11 @@ def compute_progress(ps: PaperStructure) -> dict:
 
     return {
         "total_sections": total,
+        "sections_total": total,
         "done": done,
+        "sections_complete": done,
         "completion_pct": pct,
+        "pct": weighted_pct,  # UI progress bar uses weighted pct
         "weighted_pct": weighted_pct,
         "total_words": total_words,
         "target_words": total_target,
@@ -257,16 +260,18 @@ def _match_heading_to_section(heading: str, ps: PaperStructure) -> Optional[Sect
         if _normalize_unicode(s.title.strip().lower()) == heading_clean:
             return s
 
-    # Pass 2: heading starts with section ID (e.g. "2.1 Psychological Ownership")
-    for s in sorted_sections:
-        if heading_clean.startswith(s.id.lower()) and len(heading_clean) > len(s.id):
-            # Check that the rest roughly matches the title
-            rest = heading_clean[len(s.id):].strip().lstrip('.').strip()
+    # Pass 2: match by heading number prefix in the title text
+    # Extract leading number from heading (e.g. "1.2" from "1.2 Problem statement")
+    import re
+    heading_num_match = re.match(r'^(\d+(?:\.\d+)*)', heading_clean)
+    if heading_num_match:
+        heading_num = heading_num_match.group(1)
+        # Find section whose title starts with the same number
+        for s in sorted_sections:
             title_norm = _normalize_unicode(s.title.strip().lower())
-            if rest and title_norm.startswith(rest[:10]):
+            title_num_match = re.match(r'^(\d+(?:\.\d+)*)', title_norm)
+            if title_num_match and title_num_match.group(1) == heading_num:
                 return s
-            # Even if rest doesn't match title, ID prefix is strong enough
-            return s
 
     # Pass 3: substring containment (heading contains title or vice versa)
     for s in sorted_sections:

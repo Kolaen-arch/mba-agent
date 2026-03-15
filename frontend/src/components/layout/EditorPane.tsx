@@ -68,7 +68,7 @@ export function EditorPane() {
   const [budgetOpen, setBudgetOpen] = useState(false)
   const [redThreadOpen, setRedThreadOpen] = useState(false)
 
-  const wordCount = currentDoc?.metadata?.word_count ?? 0
+  const wordCount = structure?.progress?.total_words ?? currentDoc?.metadata?.word_count ?? 0
 
   const sectionLabel = useMemo(() => {
     if (!sectionId) return null
@@ -82,12 +82,19 @@ export function EditorPane() {
 
   // Debounced auto-save: writes editor content to docx after 2s of inactivity
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const skipNextSaveRef = useRef(false)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+
+  const savingRef = useRef(false)
 
   const saveToDocx = useCallback(async (content: JSONContent) => {
+    if (savingRef.current) return  // prevent concurrent saves
     const path = useDocumentStore.getState().currentPath
     if (!path) return
     const markdown = tiptapToMarkdown(content)
     if (!markdown.trim()) return
+    savingRef.current = true
+    setSaveStatus('saving')
     try {
       const result = await api('/api/documents/save', {
         method: 'POST',
@@ -97,26 +104,31 @@ export function EditorPane() {
         // Refresh structure with updated word counts
         const s = await api('/api/structure')
         useDocumentStore.getState().setStructure(s as any)
-        // Update word count in current doc metadata
-        const doc = useDocumentStore.getState().currentDoc
-        if (doc) {
-          useDocumentStore.getState().setCurrentDoc({
-            ...doc,
-            metadata: { ...doc.metadata, word_count: result.word_count },
-          })
-        }
+        setSaveStatus('saved')
+        setTimeout(() => setSaveStatus('idle'), 2000)
       }
     } catch {
-      // Silent fail — don't interrupt typing
+      setSaveStatus('error')
+      setTimeout(() => setSaveStatus('idle'), 3000)
+    } finally {
+      savingRef.current = false
     }
   }, [])
 
   const handleEditorUpdate = useCallback(
     (content: JSONContent) => {
       setEditorContent(content)
+      // Skip the save triggered by programmatic content load (e.g. opening a doc)
+      if (skipNextSaveRef.current) {
+        skipNextSaveRef.current = false
+        console.log('[auto-save] Skipped (programmatic content set)')
+        return
+      }
       // Debounce save: wait 2 seconds after last keystroke
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
       if (!useDocumentStore.getState().diffMode) {
+        console.log('[auto-save] Edit detected, scheduling save in 2s')
+        setSaveStatus('idle')
         saveTimerRef.current = setTimeout(() => saveToDocx(content), 2000)
       }
     },
@@ -179,6 +191,7 @@ export function EditorPane() {
           body: JSON.stringify({ path }),
         })
         setCurrentDoc(doc)
+        skipNextSaveRef.current = true
         setEditorContent(docxToTiptap(doc))
       } catch {
         setCurrentDoc(null)
@@ -262,6 +275,7 @@ export function EditorPane() {
     setDiffStats(null)
     const doc = useDocumentStore.getState().currentDoc
     if (doc) {
+      skipNextSaveRef.current = true
       setEditorContent(docxToTiptap(doc))
     }
   }, [setDiffMode, setPendingDraft, setEditorContent])
@@ -422,7 +436,11 @@ export function EditorPane() {
         <span>{wordCount.toLocaleString()} words</span>
         {structure && <span>{progressPct}% complete</span>}
         {diffMode && <span className="text-accent font-medium">Draft Preview</span>}
-        {currentDoc && !diffMode && <span className="ml-auto">Saved</span>}
+        {currentDoc && !diffMode && (
+          <span className={`ml-auto ${saveStatus === 'saving' ? 'text-accent' : saveStatus === 'error' ? 'text-red' : ''}`}>
+            {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? '✓ Saved' : saveStatus === 'error' ? 'Save failed' : 'Saved'}
+          </span>
+        )}
         <span className="ml-auto text-[10px]">Ctrl+1-8 modes · Ctrl+D panel · Esc abort</span>
       </div>
 
