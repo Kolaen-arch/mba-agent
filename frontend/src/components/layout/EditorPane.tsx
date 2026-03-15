@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState, useRef, useEffect } from 'react'
 import type { JSONContent } from '@tiptap/react'
 import {
   PanelLeftClose,
@@ -49,6 +49,19 @@ export function EditorPane() {
   // Diff state
   const [diffHtml, setDiffHtml] = useState<string | null>(null)
   const [diffStats, setDiffStats] = useState<{ currentWords: number; newWords: number; delta: number } | null>(null)
+
+  // Document dropdown
+  const [docDropdownOpen, setDocDropdownOpen] = useState(false)
+  const docDropdownRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (docDropdownRef.current && !docDropdownRef.current.contains(e.target as Node)) {
+        setDocDropdownOpen(false)
+      }
+    }
+    if (docDropdownOpen) document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [docDropdownOpen])
 
   // Modals
   const [scaffoldOpen, setScaffoldOpen] = useState(false)
@@ -244,25 +257,38 @@ export function EditorPane() {
             {sidebarOpen ? <PanelLeftClose size={15} strokeWidth={1.8} /> : <PanelLeftOpen size={15} strokeWidth={1.8} />}
           </button>
 
-          {currentPath ? (
-            <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-bg-paper border border-border-light text-xs text-text-primary">
+          <div className="relative">
+            <button
+              onClick={() => setDocDropdownOpen(!docDropdownOpen)}
+              className="flex items-center gap-1.5 px-2 py-1 rounded bg-bg-paper border border-border-light text-xs text-text-primary hover:bg-bg-sidebar-hover transition-colors"
+            >
               <FileText size={12} className="text-text-muted" />
-              <span className="max-w-[200px] truncate">{currentPath.split('/').pop()}</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1">
-              {files.slice(0, 4).map((f) => (
-                <button
-                  key={f.path}
-                  onClick={() => loadDocument(f.path)}
-                  className="flex items-center gap-1 px-2 py-1 rounded text-xs text-text-secondary hover:bg-bg-sidebar-hover transition-colors"
-                >
-                  <FileText size={11} className="shrink-0" />
-                  <span className="max-w-[120px] truncate">{f.filename}</span>
-                </button>
-              ))}
-            </div>
-          )}
+              <span className="max-w-[200px] truncate">
+                {currentPath ? currentPath.split('/').pop()?.split('\\').pop() : 'Open document...'}
+              </span>
+              <span className="text-text-muted text-[10px]">▾</span>
+            </button>
+            {docDropdownOpen && (
+              <div
+                ref={docDropdownRef}
+                className="absolute left-0 top-full mt-1 z-50 bg-bg-card border border-border rounded-lg shadow-lg py-1 min-w-[200px]"
+              >
+                {files.map((f) => (
+                  <button
+                    key={f.path}
+                    onClick={() => { loadDocument(f.path); setDocDropdownOpen(false) }}
+                    className={`flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left hover:bg-bg-sidebar-hover transition-colors ${
+                      f.path === currentPath ? 'text-accent font-medium' : 'text-text-secondary'
+                    }`}
+                  >
+                    <FileText size={11} className="shrink-0" />
+                    <span className="truncate">{f.filename}</span>
+                    <span className="ml-auto text-text-muted text-[10px]">{f.word_count?.toLocaleString() ?? ''} w</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Center: Template + tool actions */}

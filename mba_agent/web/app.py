@@ -677,10 +677,18 @@ def create_app() -> Flask:
             if doc_content:
                 parts.append(f"<existing_draft>\n{doc_content[:60000]}\n</existing_draft>")
             if sec:
-                parts.append(f"<target_section id=\"{section_id}\" title=\"{sec.title}\" "
-                             f"target_words=\"{sec.target_words}\" current_words=\"{sec.word_count}\" "
-                             f"status=\"{sec.status}\" />"
-                )
+                sec_info = (f"<target_section id=\"{section_id}\" title=\"{sec.title}\" "
+                            f"target_words=\"{sec.target_words}\" current_words=\"{sec.word_count}\" "
+                            f"status=\"{sec.status}\">")
+                # Include sub-section structure so the LLM respects headings
+                sub_sections = [s for s in ps.sections if s.id.startswith(section_id + ".")]
+                if sub_sections:
+                    sec_info += "\n  <sub_sections>"
+                    for sub in sub_sections:
+                        sec_info += f"\n    <sub id=\"{sub.id}\" title=\"{sub.title}\" target_words=\"{sub.target_words}\" />"
+                    sec_info += "\n  </sub_sections>"
+                sec_info += "\n</target_section>"
+                parts.append(sec_info)
             parts.append(f"\n{message}")
             if doc_content:
                 parts.append(
@@ -689,6 +697,9 @@ def create_app() -> Flask:
                     "you need. Write the requested content NOW. Do NOT ask for the topic, research "
                     "question, or any other details — extract them from the document. "
                     "Do NOT say 'I need' or 'send me' or 'please provide'. "
+                    "If the target_section has <sub_sections>, you MUST organize your output under "
+                    "those sub-section headings (e.g. ## 1.1 Background, ## 1.2 Problem statement). "
+                    "Write content for each sub-section, do NOT dump everything under one heading. "
                     "Begin your response with the section heading and then write academic prose.]"
                 )
             return system, "\n".join(parts), False
