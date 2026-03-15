@@ -14,7 +14,7 @@ import {
 import { useAppStore } from '../../stores/appStore'
 import { useDocumentStore, type DocData } from '../../stores/documentStore'
 import { api } from '../../lib/api'
-import { docxToTiptap } from '../../lib/docxConverter'
+import { docxToTiptap, tiptapToMarkdown } from '../../lib/docxConverter'
 import { TEMPLATES } from '../../lib/constants'
 import Editor, { type SelectionAction } from '../editor/Editor'
 import DiffBar from '../editor/DiffBar'
@@ -80,11 +80,47 @@ export function EditorPane() {
 
   const progressPct = structure?.progress?.pct ?? 0
 
+  // Debounced auto-save: writes editor content to docx after 2s of inactivity
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const saveToDocx = useCallback(async (content: JSONContent) => {
+    const path = useDocumentStore.getState().currentPath
+    if (!path) return
+    const markdown = tiptapToMarkdown(content)
+    if (!markdown.trim()) return
+    try {
+      const result = await api('/api/documents/save', {
+        method: 'POST',
+        body: JSON.stringify({ docx_path: path, content: markdown }),
+      })
+      if (result.ok) {
+        // Refresh structure with updated word counts
+        const s = await api('/api/structure')
+        useDocumentStore.getState().setStructure(s as any)
+        // Update word count in current doc metadata
+        const doc = useDocumentStore.getState().currentDoc
+        if (doc) {
+          useDocumentStore.getState().setCurrentDoc({
+            ...doc,
+            metadata: { ...doc.metadata, word_count: result.word_count },
+          })
+        }
+      }
+    } catch {
+      // Silent fail — don't interrupt typing
+    }
+  }, [])
+
   const handleEditorUpdate = useCallback(
     (content: JSONContent) => {
       setEditorContent(content)
+      // Debounce save: wait 2 seconds after last keystroke
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      if (!useDocumentStore.getState().diffMode) {
+        saveTimerRef.current = setTimeout(() => saveToDocx(content), 2000)
+      }
     },
-    [setEditorContent]
+    [setEditorContent, saveToDocx]
   )
 
   /* selection action → route to chat with context */

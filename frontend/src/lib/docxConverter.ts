@@ -81,3 +81,40 @@ function parseParagraphContent(text: string): JSONContent[] {
   // For now, treat as plain text. Later can parse bold/italic/citations.
   return [{ type: 'text', text }]
 }
+
+/**
+ * Convert TipTap JSON content back to markdown text for saving to docx.
+ * Headings become # / ## / ###, paragraphs become plain text.
+ */
+export function tiptapToMarkdown(doc: JSONContent): string {
+  if (!doc.content) return ''
+
+  const lines: string[] = []
+  for (const node of doc.content) {
+    if (node.type === 'heading') {
+      const level = node.attrs?.level ?? 1
+      const prefix = '#'.repeat(level)
+      const text = extractText(node)
+      lines.push(`${prefix} ${text}`)
+      lines.push('')
+    } else if (node.type === 'paragraph') {
+      const text = extractText(node)
+      lines.push(text)
+      lines.push('')
+    } else {
+      // Other node types: extract text as-is
+      const text = extractText(node)
+      if (text) {
+        lines.push(text)
+        lines.push('')
+      }
+    }
+  }
+  return lines.join('\n').trim()
+}
+
+function extractText(node: JSONContent): string {
+  if (node.text) return node.text
+  if (!node.content) return ''
+  return node.content.map(extractText).join('')
+}

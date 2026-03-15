@@ -1554,6 +1554,57 @@ def create_app() -> Flask:
             "delta": len(new_text.split()) - len(current_text.split()),
         })
 
+    @app.route("/api/documents/save", methods=["POST"])
+    def api_save_document():
+        """Save editor content back to the docx file."""
+        data = request.json or {}
+        docx_path = data.get("docx_path", "")
+        content = data.get("content", "")  # markdown-formatted text
+
+        if not docx_path or not os.path.exists(docx_path):
+            return jsonify({"error": "No document found"}), 404
+        if not content.strip():
+            return jsonify({"error": "Empty content"}), 400
+
+        try:
+            write_docx_from_markdown(content, docx_path)
+            words = content.split()
+
+            # Auto-sync structure from saved docx
+            ps = load_structure()
+            sections_updated = 0
+            if ps.sections:
+                doc_data = read_docx(docx_path)
+                for doc_sec in doc_data["sections"]:
+                    heading = doc_sec["heading"]
+                    if heading == "Preamble":
+                        continue
+                    matched = _match_heading_to_section(heading, ps)
+                    if matched:
+                        sec_text = "\n\n".join(doc_sec["paragraphs"])
+                        sec_words = sec_text.split()
+                        matched.word_count = len(sec_words)
+                        matched.starts_with = " ".join(sec_words[:200]) if len(sec_words) > 200 else sec_text
+                        matched.ends_with = " ".join(sec_words[-200:]) if len(sec_words) > 200 else sec_text
+                        if matched.word_count == 0:
+                            matched.status = "not_started"
+                        elif matched.target_words > 0 and matched.word_count / matched.target_words >= 0.9:
+                            matched.status = "review"
+                        elif matched.target_words > 0 and matched.word_count / matched.target_words >= 0.5:
+                            matched.status = "drafting"
+                        elif matched.word_count > 50 and matched.status == "not_started":
+                            matched.status = "outline"
+                        sections_updated += 1
+                save_structure(ps)
+
+            return jsonify({
+                "ok": True,
+                "word_count": len(words),
+                "sections_updated": sections_updated,
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     @app.route("/api/documents/accept-draft", methods=["POST"])
     def api_accept_draft():
         """Accept a draft by replacing the section content in the docx."""
