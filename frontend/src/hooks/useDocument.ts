@@ -9,7 +9,6 @@ export function useDocument() {
     setFiles, setCurrentPath, setCurrentDoc,
     setEditorContent, setPendingDraft, setDiffMode, setStructure,
   } = useDocumentStore()
-  const { sectionId } = useAppStore()
 
   const loadFiles = useCallback(async () => {
     try {

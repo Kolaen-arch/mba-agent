@@ -71,7 +71,9 @@ export function EditorPane() {
   const wordCount = currentDoc?.metadata?.word_count ?? 0
 
   const sectionLabel = useMemo(() => {
-    if (!sectionId || !structure) return null
+    if (!sectionId) return null
+    if (sectionId === '__full__') return 'Full Document'
+    if (!structure) return null
     const sec = structure.sections.find((s) => s.id === sectionId)
     return sec?.title ?? null
   }, [sectionId, structure])

@@ -690,7 +690,7 @@ def create_app() -> Flask:
                 sec_info += "\n</target_section>"
                 parts.append(sec_info)
             parts.append(f"\n{message}")
-            if doc_content:
+            if doc_content and sec:
                 parts.append(
                     "\n[MANDATORY: You have the student's document above. The document content, "
                     "combined with the retrieved source chunks in your context, is ALL the information "
@@ -701,6 +701,22 @@ def create_app() -> Flask:
                     "those sub-section headings (e.g. ## 1.1 Background, ## 1.2 Problem statement). "
                     "Write content for each sub-section, do NOT dump everything under one heading. "
                     "Begin your response with the section heading and then write academic prose.]"
+                )
+            elif doc_content and not sec:
+                # Whole-document restructuring mode
+                struct_lines = []
+                for s in ps.sections:
+                    indent = "  " * (s.id.count("."))
+                    struct_lines.append(f"{indent}{s.id}. {s.title}")
+                parts.append(
+                    f"\n<paper_structure>\n" + "\n".join(struct_lines) + "\n</paper_structure>"
+                    "\n[FULL DOCUMENT MODE: You have the student's complete document above. "
+                    "The user wants you to restructure, clean up, or rewrite the entire document. "
+                    "Your output must be the COMPLETE restructured document as markdown. "
+                    "Use the <paper_structure> as the expected heading hierarchy. "
+                    "Fix: duplicated text, misplaced paragraphs, missing headings, wrong heading levels. "
+                    "Preserve all meaningful content — do not delete substance, only duplicates and errors. "
+                    "Output the full document from start to finish with proper # / ## / ### headings.]"
                 )
             return system, "\n".join(parts), False
         elif mode == "synthesize":
@@ -1499,6 +1515,18 @@ def create_app() -> Flask:
         if not docx_path or not os.path.exists(docx_path):
             return jsonify({"error": "No document found"}), 404
 
+        # Whole-document mode: section_id == "__full__"
+        if section_id == "__full__":
+            doc_data = read_docx(docx_path)
+            current_text = doc_data.get("full_text", "")
+            diff_html = compute_inline_diff(current_text, new_text)
+            return jsonify({
+                "diff_html": diff_html,
+                "current_words": len(current_text.split()),
+                "new_words": len(new_text.split()),
+                "delta": len(new_text.split()) - len(current_text.split()),
+            })
+
         ps = load_structure()
         sec = get_section(ps, section_id)
         if not sec:
@@ -1532,6 +1560,22 @@ def create_app() -> Flask:
 
         if not docx_path or not os.path.exists(docx_path):
             return jsonify({"error": "No document found"}), 404
+
+        # Whole-document mode: rewrite the entire docx from markdown
+        if section_id == "__full__":
+            try:
+                doc_data = read_docx(docx_path)
+                db.save_doc_version(
+                    filename=os.path.basename(docx_path),
+                    content=doc_data["full_text"],
+                    session_id=data.get("session_id", ""),
+                    change_summary="before_full_rewrite",
+                )
+                write_docx_from_markdown(new_text, docx_path)
+                words = new_text.split()
+                return jsonify({"ok": True, "result": f"Full document rewritten ({len(words)} words)", "word_count": len(words)})
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
 
         ps = load_structure()
         sec = get_section(ps, section_id)

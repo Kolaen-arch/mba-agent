@@ -27,18 +27,17 @@ export const GhostText = Extension.create({
     return {
       setGhostText:
         (text: string) =>
-        ({ editor, tr }) => {
+        ({ editor, tr }: { editor: any; tr: any }) => {
           const pos = tr.selection.from
           editor.storage.ghostText.text = text
           editor.storage.ghostText.pos = pos
-          // Force re-render of decorations
           editor.view.dispatch(editor.view.state.tr.setMeta(ghostTextKey, { text, pos }))
           return true
         },
 
       clearGhostText:
         () =>
-        ({ editor }) => {
+        ({ editor }: { editor: any }) => {
           editor.storage.ghostText.text = ''
           editor.storage.ghostText.pos = 0
           editor.view.dispatch(editor.view.state.tr.setMeta(ghostTextKey, { text: '', pos: 0 }))
@@ -47,7 +46,7 @@ export const GhostText = Extension.create({
 
       acceptGhostText:
         () =>
-        ({ editor }) => {
+        ({ editor }: { editor: any }) => {
           const { text, pos } = editor.storage.ghostText
           if (!text || !pos) return false
           editor.storage.ghostText.text = ''
@@ -55,15 +54,15 @@ export const GhostText = Extension.create({
           editor.chain().focus().insertContentAt(pos, text).run()
           return true
         },
-    }
+    } as any
   },
 
   addKeyboardShortcuts() {
     return {
-      Tab: ({ editor }) => {
+      Tab: ({ editor }: { editor: any }) => {
         const { text } = editor.storage.ghostText
         if (text) {
-          editor.commands.acceptGhostText()
+          (editor.commands as any).acceptGhostText()
           return true
         }
         return false

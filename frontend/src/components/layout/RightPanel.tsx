@@ -18,10 +18,10 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import { marked } from 'marked'
-import { useAppStore, type Message } from '../../stores/appStore'
+import { useAppStore } from '../../stores/appStore'
 import { useDocumentStore, type PaperSection } from '../../stores/documentStore'
 import { apiRaw, api } from '../../lib/api'
-import { MODES, type ModeId, MODEL_OPTIONS, THINK_OPTIONS } from '../../lib/constants'
+import { MODES, MODEL_OPTIONS, THINK_OPTIONS } from '../../lib/constants'
 import { toast } from '../modals/Toast'
 
 // Configure marked for safe, compact output
@@ -283,12 +283,9 @@ function ChatPanel() {
 
                   // Auto-preview diff after draft completion
                   if (mode === 'draft' && fullText.trim()) {
-                    // Use backend-detected section_id if no section was pre-selected
-                    const effectiveSectionId = useAppStore.getState().sectionId || data.section_id
-                    if (effectiveSectionId) {
-                      // Ensure sectionId is set before calling previewDiff
-                      useAppStore.getState().setSectionId(effectiveSectionId)
-                    }
+                    // Use backend-detected section_id, or __full__ for whole-doc mode
+                    const effectiveSectionId = useAppStore.getState().sectionId || data.section_id || '__full__'
+                    useAppStore.getState().setSectionId(effectiveSectionId)
                     const previewDiff = (window as any).__previewDiff
                     if (typeof previewDiff === 'function') {
                       setTimeout(() => previewDiff(fullText), 300)

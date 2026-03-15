@@ -1,6 +1,5 @@
 import { useCallback } from 'react'
 import { useAppStore } from '../stores/appStore'
-import { useDocumentStore } from '../stores/documentStore'
 import { apiRaw } from '../lib/api'
 
 interface SSECallbacks {
@@ -20,8 +19,6 @@ export function useSSE() {
     setThinkText, appendThinkText, setLastResp,
     setAbortController, setSession, addMessage,
   } = useAppStore()
-
-  const { currentPath } = useDocumentStore()
 
   const send = useCallback(async (message: string, callbacks?: SSECallbacks) => {
     if (!message.trim()) return

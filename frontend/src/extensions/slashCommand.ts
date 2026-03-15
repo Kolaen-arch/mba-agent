@@ -8,7 +8,6 @@
  */
 import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
-import { Decoration, DecorationSet } from '@tiptap/pm/view'
 
 export interface SlashCommandItem {
   id: string
@@ -60,7 +59,7 @@ export const SlashCommand = Extension.create({
         key: slashKey,
 
         props: {
-          handleTextInput(view, from, to, text) {
+          handleTextInput(view, from, _to, text) {
             const state = view.state
             const $from = state.doc.resolve(from)
             const lineText = $from.parent.textBetween(
