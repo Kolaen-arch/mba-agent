@@ -402,7 +402,26 @@ def replace_section(source_path: str, heading: str, new_text: str, output_path: 
             paragraphs_to_clear.append(idx)
 
     if not paragraphs_to_clear:
-        # Section not found or empty — append after heading
+        # Section found but no body paragraphs — insert after the heading
+        heading_para = None
+        for para in doc.paragraphs:
+            style_name = para.style.name if para.style else ""
+            if style_name.startswith("Heading") and para.text.strip().lower() == heading.strip().lower():
+                heading_para = para
+                break
+        if heading_para and new_text.strip():
+            from docx.oxml.ns import qn
+            from docx.text.paragraph import Paragraph
+            insert_after = heading_para._element
+            new_lines = [l for l in new_text.split("\n") if l.strip()]
+            for line in new_lines:
+                new_p = insert_after.makeelement(qn('w:p'), {})
+                insert_after.addnext(new_p)
+                new_para = Paragraph(new_p, heading_para._element.getparent())
+                _add_formatted_runs(new_para, line)
+                insert_after = new_p
+            doc.save(output_path)
+            return f"Inserted {len(new_lines)} paragraphs after '{heading}'."
         doc.save(output_path)
         return "Section not found or empty — no changes made."
 
@@ -413,14 +432,22 @@ def replace_section(source_path: str, heading: str, new_text: str, output_path: 
             run.text = ""
         para.text = ""
 
-    # Write new content into first cleared paragraph, rest as new paragraphs
+    # Write new content into first cleared paragraph, rest inserted after it
     new_lines = [l for l in new_text.split("\n") if l.strip()]
     if new_lines and paragraphs_to_clear:
         first_para = doc.paragraphs[paragraphs_to_clear[0]]
         _add_formatted_runs(first_para, new_lines[0])
+
+        # Insert additional paragraphs right after the first one (not at end of doc)
+        insert_after = first_para._element
         for line in new_lines[1:]:
-            new_para = doc.add_paragraph()
+            from docx.oxml.ns import qn
+            new_p = insert_after.makeelement(qn('w:p'), {})
+            insert_after.addnext(new_p)
+            from docx.text.paragraph import Paragraph
+            new_para = Paragraph(new_p, first_para._element.getparent())
             _add_formatted_runs(new_para, line)
+            insert_after = new_p
 
     doc.save(output_path)
     return f"Replaced section '{heading}' with {len(new_lines)} paragraphs."
